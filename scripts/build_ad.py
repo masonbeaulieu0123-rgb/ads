@@ -34,16 +34,18 @@ LAYOUTS = {
     "9x16": dict(
         size=(1080, 1920), out="output/droneshine_reel.mp4",
         kicker=(30, 228), headline=(84, 338), sub=(38, 448),
-        panel=1000, panel_xy=(40, 550), radius=32, watermark=(27, 1748),
-        outro=dict(logo_w=660, logo_y=320, state=(68, 1180), phone=(56, 1280),
-                   site=(38, 1500), trust=(26, 1585)),
+        panel=900, panel_xy=(90, 520), radius=32, watermark=(27, 1760),
+        bullets=(33, 1492, 84),
+        outro=dict(logo_w=660, logo_y=320, state=(66, 1150), services=(33, 1234),
+                   phone=(54, 1330), site=(38, 1545), trust=(26, 1628)),
     ),
     "4x5": dict(
         size=(1080, 1350), out="output/droneshine_feed.mp4",
-        kicker=(26, 120), headline=(66, 210), sub=(34, 302),
-        panel=880, panel_xy=(100, 375), radius=28, watermark=(25, 1302),
-        outro=dict(logo_w=460, logo_y=125, state=(56, 715), phone=(48, 800),
-                   site=(34, 1000), trust=(23, 1068)),
+        kicker=(26, 118), headline=(66, 205), sub=(34, 296),
+        panel=740, panel_xy=(170, 350), radius=28, watermark=(23, 1316),
+        bullets=(24, 1122, 52),
+        outro=dict(logo_w=460, logo_y=125, state=(54, 645), services=(28, 714),
+                   phone=(46, 784), site=(34, 990), trust=(23, 1056)),
     ),
 }
 
@@ -105,6 +107,29 @@ def faded(im, alpha):
     return im
 
 
+def check_icon(size):
+    s = size * 3
+    im = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    w = int(s * 0.14)
+    d.line([(s * 0.12, s * 0.55), (s * 0.40, s * 0.80), (s * 0.88, s * 0.22)],
+           fill=(*GREEN, 255), width=w, joint="curve")
+    return im.resize((size, size), Image.LANCZOS)
+
+
+def bullet_row(text, font, icon):
+    probe = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    tw = int(probe.textlength(text, font=font))
+    asc, desc = font.getmetrics()
+    h = max(icon.height, asc + desc)
+    gap = int(icon.width * 0.55)
+    im = Image.new("RGBA", (icon.width + gap + tw, h), (0, 0, 0, 0))
+    im.paste(icon, (0, (h - icon.height) // 2), icon)
+    ImageDraw.Draw(im).text((icon.width + gap, h / 2), text, font=font,
+                            fill=(216, 223, 217), anchor="lm")
+    return im
+
+
 def lerp_color(a, b, t):
     return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
 
@@ -159,11 +184,15 @@ def vo_len(name):
 
 
 class BeforeAfterScene:
-    def __init__(self, path, headline, sub, dur, L):
+    def __init__(self, path, headline, sub, bullets, dur, L):
         self.dur = dur
         self.headline = headline
         self.sub = sub
         self.L = L
+        bs, self.bullet_y, self.bullet_gap = L["bullets"]
+        icon = check_icon(int(bs * 0.95))
+        f_bullet = archivo(bs, 550)
+        self.bullets = [bullet_row(b, f_bullet, icon) for b in bullets]
         P = self.P = L["panel"]
         src = Image.open(path).convert("RGB")
         half_w = src.width // 2
@@ -242,6 +271,17 @@ class BeforeAfterScene:
         d.text((W / 2, hy), self.headline, font=anton(hs), fill=WHITE, anchor="mm")
         draw_tracked(d, (W / 2, sy), self.sub, archivo(ss, 500), SOFT, tracking=2)
 
+        # info bullets fade in one after another, left-aligned as a centered block
+        block_w = max(b.width for b in self.bullets)
+        bx = (W - block_w) // 2
+        for i, row in enumerate(self.bullets):
+            al = ease_out((t - (0.65 + 0.35 * i)) / 0.5)
+            if al <= 0:
+                continue
+            r = faded(row, al)
+            rise = int((1 - al) * 14)
+            frame.paste(r, (bx, self.bullet_y + i * self.bullet_gap + rise), r)
+
         ws, wy = L["watermark"]
         draw_tracked(d, (W / 2, wy), f"{SITE}  •  {PHONE}", archivo(ws, 550), GRAY,
                      tracking=4)
@@ -281,6 +321,11 @@ class OutroScene:
             ss_, sy_ = O["state"]
             d.text((W / 2, sy_), "STATEWIDE IN FLORIDA", font=anton(ss_),
                    fill=col, anchor="mm")
+        if fade(c["services"]) > 0:
+            col = lerp_color(BG_BOT, GREEN, fade(c["services"]))
+            vs_, vy_ = O["services"]
+            draw_tracked(d, (W / 2, vy_), "ROOFS • WINDOWS • SOLAR • BUILDING EXTERIORS",
+                         archivo(vs_, 600), col, tracking=3)
         if fade(c["phone"]) > 0:
             a3 = fade(c["phone"])
             p = faded(self.phone_pill, a3)
@@ -320,6 +365,7 @@ VO_CUES = [
 ]
 OUTRO_CUES = dict(
     state=0.35,
+    services=0.9,
     phone=0.35 + V4A + 0.35,
     site=0.35 + V4A + 0.35 + V4B * 0.52,
     trust=0.35 + V4A + 0.35 + V4B * 0.75,
@@ -329,11 +375,20 @@ OUTRO_CUES = dict(
 def make_scenes(L):
     return [
         BeforeAfterScene("assets/ba_lake_house.jpg",
-                         "THE DRONE DIFFERENCE", "SOFT-WASH ROOF CLEANING", DURS[0], L),
+                         "THE DRONE DIFFERENCE", "SOFT-WASH ROOF CLEANING",
+                         ["Surface-safe soft-wash pressure",
+                          "Spot-free deionized rinse",
+                          "Before & after photos included"], DURS[0], L),
         BeforeAfterScene("assets/ba_pool_house.jpg",
-                         "NOBODY ON YOUR ROOF", "NO LADDERS • ZERO DAMAGE RISK", DURS[1], L),
+                         "NOBODY ON YOUR ROOF", "NO LADDERS • NO CREWS AT HEIGHT",
+                         ["Zero workers at height",
+                          "0% damage risk",
+                          "Fully insured • FAA Part 107 certified"], DURS[1], L),
         BeforeAfterScene("assets/ba_gray_roof.jpg",
-                         "SAFER. FASTER. CHEAPER.", "50–70% QUICKER THAN CREWS", DURS[2], L),
+                         "SAFER. FASTER. CHEAPER.", "THE MODERN WAY TO CLEAN",
+                         ["50–70% quicker than crews",
+                          "No lifts or scaffolds needed",
+                          "Eco-friendly options"], DURS[2], L),
         OutroScene(DURS[3], OUTRO_CUES, L),
     ]
 
@@ -438,6 +493,8 @@ def build_audio():
         i1 = min(i0 + len(clip), n)
         vo[i0:i1] += clip[:i1 - i0]
         speech[i0:i1] = True
+    # gentle saturation-compression for a fuller, produced commercial sound
+    vo = np.tanh(vo * 1.8) / np.tanh(1.8)
     music = synth_music(TOTAL)
     duck = np.where(speech, 0.34, 1.0).astype(np.float32)
     kernel = np.ones(int(0.18 * SR), dtype=np.float32)
