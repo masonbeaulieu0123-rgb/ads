@@ -1,7 +1,8 @@
 """Build the DroneShine Instagram video ad from the before/after photos.
 
-Renders every frame with Pillow, pipes them to ffmpeg (imageio-ffmpeg), then
-mixes the Kokoro voiceover with a synthesized music bed and muxes the audio in.
+Music-only cut: no voiceover — a synthesized beat-driven track carries the ad,
+with scene cuts landing on bar lines and whoosh transitions. Renders every
+frame with Pillow, pipes them to ffmpeg (imageio-ffmpeg), then muxes the audio.
 
 Usage:
     python3 scripts/build_ad.py                  # 9:16 Reels -> output/droneshine_reel.mp4
@@ -14,7 +15,6 @@ import sys
 import wave
 import subprocess
 import numpy as np
-import soundfile as sf
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 FPS = 30
@@ -22,8 +22,8 @@ BG_TOP = (19, 21, 20)
 BG_BOT = (9, 10, 9)
 GREEN = (77, 171, 85)
 WHITE = (245, 247, 245)
-SOFT = (178, 186, 180)     # sub-headline
-GRAY = (140, 148, 142)     # watermark / trust line
+SOFT = (178, 186, 180)
+GRAY = (140, 148, 142)
 PHONE = "855-376-6392"
 SITE = "DRONESHINECLEANING.COM"
 
@@ -33,21 +33,33 @@ ARCHIVO = "assets/fonts/Archivo.ttf"
 LAYOUTS = {
     "9x16": dict(
         size=(1080, 1920), out="output/droneshine_reel.mp4",
-        kicker=(30, 228), headline=(84, 338), sub=(38, 448),
-        panel=900, panel_xy=(90, 520), radius=32, watermark=(27, 1760),
-        bullets=(33, 1492, 84),
+        bars_y=150, kicker=(30, 240), headline=(84, 348), sub=(38, 456),
+        panel=900, panel_xy=(90, 526), radius=32, watermark=(27, 1760),
+        bullets=(33, 1496, 84),
         outro=dict(logo_w=660, logo_y=320, state=(66, 1150), services=(33, 1234),
                    phone=(54, 1330), site=(38, 1545), trust=(26, 1628)),
     ),
     "4x5": dict(
         size=(1080, 1350), out="output/droneshine_feed.mp4",
-        kicker=(26, 118), headline=(66, 205), sub=(34, 296),
-        panel=740, panel_xy=(170, 350), radius=28, watermark=(23, 1316),
-        bullets=(24, 1122, 52),
+        bars_y=58, kicker=(26, 126), headline=(66, 212), sub=(34, 302),
+        panel=740, panel_xy=(170, 354), radius=28, watermark=(23, 1316),
+        bullets=(24, 1124, 52),
         outro=dict(logo_w=460, logo_y=125, state=(54, 645), services=(28, 714),
                    phone=(46, 784), site=(34, 990), trust=(23, 1056)),
     ),
 }
+
+# -------- timing: four scenes, cuts land on 2 s bars (120 bpm) --------
+DURS = [6.5, 6.5, 6.5, 6.5]
+XFADE = 0.5
+STARTS = []
+_t = 0.0
+for _d in DURS:
+    STARTS.append(_t)
+    _t += _d - XFADE
+TOTAL = STARTS[-1] + DURS[-1]          # 24.5 s; transitions begin at 6 / 12 / 18 s
+
+OUTRO_CUES = dict(state=0.6, services=1.1, phone=1.7, site=2.6, trust=3.2)
 
 
 def anton(size):
@@ -107,6 +119,10 @@ def faded(im, alpha):
     return im
 
 
+def lerp_color(a, b, t):
+    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+
 def check_icon(size):
     s = size * 3
     im = Image.new("RGBA", (s, s), (0, 0, 0, 0))
@@ -130,12 +146,25 @@ def bullet_row(text, font, icon):
     return im
 
 
-def lerp_color(a, b, t):
-    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+def draw_progress(frame, L, idx, p):
+    """Story-style progress bars: one segment per scene, active one fills."""
+    W = L["size"][0]
+    y = L["bars_y"]
+    n = len(DURS)
+    seg_w, gap, h = 72, 12, 6
+    total_w = n * seg_w + (n - 1) * gap
+    x0 = (W - total_w) // 2
+    d = ImageDraw.Draw(frame, "RGBA")
+    for j in range(n):
+        x = x0 + j * (seg_w + gap)
+        d.rounded_rectangle([x, y, x + seg_w, y + h], h // 2, fill=(255, 255, 255, 40))
+        fill = 1.0 if j < idx else (p if j == idx else 0.0)
+        if fill > 0:
+            d.rounded_rectangle([x, y, x + max(int(seg_w * fill), h), y + h],
+                                h // 2, fill=(*GREEN, 235))
 
 
 def make_background(L):
-    """Vertical gradient with a faint green glow behind the panel."""
     W, H = L["size"]
     col = np.linspace(0, 1, H)[:, None]
     grad = (np.array(BG_TOP) * (1 - col) + np.array(BG_BOT) * col)
@@ -160,7 +189,6 @@ def make_panel_shadow(L):
 
 
 def load_logo(width):
-    """Original logo art with its flat background keyed out, upscaled and sharpened."""
     im = Image.open("assets/logo.jpg").convert("RGB")
     arr = np.asarray(im).astype(int)
     diff = np.abs(arr - 14).max(axis=2)
@@ -178,14 +206,10 @@ def load_logo(width):
     return im.filter(ImageFilter.UnsharpMask(radius=2, percent=55, threshold=2))
 
 
-def vo_len(name):
-    info = sf.info(f"output/audio/{name}.wav")
-    return info.frames / info.samplerate
-
-
 class BeforeAfterScene:
-    def __init__(self, path, headline, sub, bullets, dur, L):
+    def __init__(self, path, headline, sub, bullets, idx, dur, L):
         self.dur = dur
+        self.idx = idx
         self.headline = headline
         self.sub = sub
         self.L = L
@@ -204,7 +228,7 @@ class BeforeAfterScene:
         self.mask = rounded_mask((P, P), L["radius"])
         self.shadow, self.shadow_pad = make_panel_shadow(L)
         self.bg = make_background(L)
-        f_label = archivo(29, 650)
+        f_label = archivo(29 if P >= 850 else 26, 650)
         self.pill_before = pill("BEFORE", f_label, WHITE, (8, 10, 9, 185),
                                 pad_x=24, pad_y=12, tracking=3)
         self.pill_after = pill("AFTER", f_label, (8, 14, 9), (*GREEN, 240),
@@ -219,7 +243,6 @@ class BeforeAfterScene:
         return im.crop((x, y, x + size, y + size))
 
     def _panel_view(self, im, zoom):
-        # sub-pixel affine sampling: smooth drift, no integer-crop jitter
         P = self.P
         a = self.big / (P * zoom)
         c = (self.big - P * a) / 2
@@ -235,8 +258,8 @@ class BeforeAfterScene:
         d = ImageDraw.Draw(frame)
 
         zoom = 1.022 + 0.038 * (t / self.dur)
-        wipe_end = self.dur - 1.45
-        wipe_t = smoothstep((t - 1.0) / (wipe_end - 1.0))
+        wipe_end = self.dur - 1.6
+        wipe_t = smoothstep((t - 0.8) / (wipe_end - 0.8))
         wipe_x = int(wipe_t * P)
 
         panel = self._panel_view(self.before, zoom)
@@ -264,18 +287,27 @@ class BeforeAfterScene:
             p = faded(self.pill_after, a_alpha)
             frame.paste(p, (px + 26, lbl_y), p)
 
+        # staggered header entrance
         ks, ky = L["kicker"]
         hs, hy = L["headline"]
         ss, sy = L["sub"]
-        draw_tracked(d, (W / 2, ky), "DRONE SHINE", archivo(ks, 600), GREEN, tracking=14)
-        d.text((W / 2, hy), self.headline, font=anton(hs), fill=WHITE, anchor="mm")
-        draw_tracked(d, (W / 2, sy), self.sub, archivo(ss, 500), SOFT, tracking=2)
+        ak = ease_out((t - 0.05) / 0.45)
+        ah = ease_out((t - 0.18) / 0.5)
+        asub = ease_out((t - 0.32) / 0.5)
+        if ak > 0:
+            draw_tracked(d, (W / 2, ky + (1 - ak) * 16), "DRONE SHINE",
+                         archivo(ks, 600), lerp_color(BG_TOP, GREEN, ak), tracking=14)
+        if ah > 0:
+            d.text((W / 2, hy + (1 - ah) * 22), self.headline, font=anton(hs),
+                   fill=lerp_color(BG_TOP, WHITE, ah), anchor="mm")
+        if asub > 0:
+            draw_tracked(d, (W / 2, sy + (1 - asub) * 16), self.sub,
+                         archivo(ss, 500), lerp_color(BG_TOP, SOFT, asub), tracking=2)
 
-        # info bullets fade in one after another, left-aligned as a centered block
         block_w = max(b.width for b in self.bullets)
         bx = (W - block_w) // 2
         for i, row in enumerate(self.bullets):
-            al = ease_out((t - (0.65 + 0.35 * i)) / 0.5)
+            al = ease_out((t - (0.7 + 0.4 * i)) / 0.5)
             if al <= 0:
                 continue
             r = faded(row, al)
@@ -285,13 +317,14 @@ class BeforeAfterScene:
         ws, wy = L["watermark"]
         draw_tracked(d, (W / 2, wy), f"{SITE}  •  {PHONE}", archivo(ws, 550), GRAY,
                      tracking=4)
+        draw_progress(frame, L, self.idx, t / self.dur)
         return frame
 
 
 class OutroScene:
-    def __init__(self, dur, cues, L):
+    def __init__(self, dur, idx, L):
         self.dur = dur
-        self.cues = cues  # dict: state, phone, site, trust (local seconds)
+        self.idx = idx
         self.L = L
         O = L["outro"]
         self.logo = load_logo(O["logo_w"])
@@ -304,7 +337,7 @@ class OutroScene:
         W, H = L["size"]
         O = L["outro"]
         frame = self.bg.copy()
-        c = self.cues
+        c = OUTRO_CUES
 
         def fade(start, dur=0.55):
             return ease_out((t - start) / dur)
@@ -312,7 +345,11 @@ class OutroScene:
         a = fade(0.0, 0.7)
         if a > 0:
             lift = int((1 - a) * 26)
-            logo = self.logo if a >= 1 else faded(self.logo, a)
+            z = 1.0 + 0.018 * (t / self.dur)
+            lw = int(self.logo.width * z)
+            logo = self.logo.resize((lw, round(self.logo.height * lw / self.logo.width)),
+                                    Image.LANCZOS)
+            logo = logo if a >= 1 else faded(logo, a)
             frame.paste(logo, ((W - logo.width) // 2, O["logo_y"] + lift), logo)
 
         d = ImageDraw.Draw(frame)
@@ -328,7 +365,11 @@ class OutroScene:
                          archivo(vs_, 600), col, tracking=3)
         if fade(c["phone"]) > 0:
             a3 = fade(c["phone"])
+            # gentle heartbeat pulse once the pill has landed
+            pulse = 1.0 + (0.015 * np.sin(2 * np.pi * 1.0 * (t - c["phone"])) if a3 >= 1 else 0.0)
             p = faded(self.phone_pill, a3)
+            pw = int(p.width * pulse)
+            p = p.resize((pw, int(p.height * pulse)), Image.LANCZOS)
             rise = int((1 - a3) * 18)
             frame.paste(p, ((W - p.width) // 2, O["phone"][1] + rise), p)
             d = ImageDraw.Draw(frame)
@@ -341,35 +382,8 @@ class OutroScene:
             draw_tracked(d, (W / 2, O["trust"][1]),
                          "FREE QUOTES • FULLY INSURED • FAA CERTIFIED",
                          archivo(O["trust"][0], 550), col, tracking=3)
+        draw_progress(frame, L, self.idx, t / self.dur)
         return frame
-
-
-# -------- timing: scene lengths follow the voiceover --------
-V1, V2, V3, V4A, V4B = (vo_len(n) for n in ("vo1", "vo2", "vo3", "vo4a", "vo4b"))
-DURS = [0.4 + V1 + 0.7, 0.4 + V2 + 0.6, 0.4 + V3 + 0.7,
-        0.35 + V4A + 0.35 + V4B + 1.1]
-XFADE = 0.5
-STARTS = []
-_t = 0.0
-for _d in DURS:
-    STARTS.append(_t)
-    _t += _d - XFADE
-TOTAL = STARTS[-1] + DURS[-1]
-
-VO_CUES = [
-    ("vo1", 0.40),
-    ("vo2", STARTS[1] + 0.40),
-    ("vo3", STARTS[2] + 0.40),
-    ("vo4a", STARTS[3] + 0.35),
-    ("vo4b", STARTS[3] + 0.35 + V4A + 0.35),
-]
-OUTRO_CUES = dict(
-    state=0.35,
-    services=0.9,
-    phone=0.35 + V4A + 0.35,
-    site=0.35 + V4A + 0.35 + V4B * 0.52,
-    trust=0.35 + V4A + 0.35 + V4B * 0.75,
-)
 
 
 def make_scenes(L):
@@ -378,23 +392,22 @@ def make_scenes(L):
                          "THE DRONE DIFFERENCE", "SOFT-WASH ROOF CLEANING",
                          ["Surface-safe soft-wash pressure",
                           "Spot-free deionized rinse",
-                          "Before & after photos included"], DURS[0], L),
+                          "Before & after photos included"], 0, DURS[0], L),
         BeforeAfterScene("assets/ba_pool_house.jpg",
                          "NOBODY ON YOUR ROOF", "NO LADDERS • NO CREWS AT HEIGHT",
                          ["Zero workers at height",
                           "0% damage risk",
-                          "Fully insured • FAA Part 107 certified"], DURS[1], L),
+                          "Fully insured • FAA Part 107 certified"], 1, DURS[1], L),
         BeforeAfterScene("assets/ba_gray_roof.jpg",
                          "SAFER. FASTER. CHEAPER.", "THE MODERN WAY TO CLEAN",
                          ["50–70% quicker than crews",
                           "No lifts or scaffolds needed",
-                          "Eco-friendly options"], DURS[2], L),
-        OutroScene(DURS[3], OUTRO_CUES, L),
+                          "Eco-friendly options"], 2, DURS[2], L),
+        OutroScene(DURS[3], 3, L),
     ]
 
 
 def dissolve(a_img, b_img, p, W, H):
-    """Film dissolve: incoming scene settles from a slight over-scale while fading in."""
     mix = smoothstep(p)
     s = 1.028 - 0.028 * ease_out(p)
     bw, bh = int(W * s), int(H * s)
@@ -417,93 +430,158 @@ def frame_at(t, scenes, L):
 # ---------------------------------------------------------------- audio
 
 SR = 44100
+BEAT = 0.5          # 120 bpm
+BAR = BEAT * 4
 
 
-def load_vo(name):
-    data, src_sr = sf.read(f"output/audio/{name}.wav", dtype="float32")
-    if data.ndim > 1:
-        data = data.mean(axis=1)
-    t = np.arange(int(len(data) * SR / src_sr)) / SR
-    return np.interp(t, np.arange(len(data)) / src_sr, data).astype(np.float32)
+def _note(freq, dur, gain, harmonics=((1, 1.0),)):
+    st = np.arange(int(dur * SR)) / SR
+    w = np.zeros_like(st)
+    for mult, amp in harmonics:
+        w += amp * np.sin(2 * np.pi * freq * mult * st)
+    return gain * w
 
 
 def synth_music(total):
-    """Understated bed: warm pad chords, soft bass, whisper-level hats."""
+    """Beat-driven modern bed: pumping pad, bass groove, four-on-floor kick,
+    claps, offbeat hats, 16th-note arp — sections build with the scenes."""
     n = int(total * SR)
-    t = np.arange(n) / SR
     music = np.zeros(n, dtype=np.float32)
-    beat = 60 / 100
-    chord_len = beat * 8
     chords = [
-        ([261.63, 329.63, 392.00, 493.88], 130.81),   # Cmaj7
-        ([196.00, 246.94, 293.66, 392.00], 98.00),    # G
-        ([220.00, 261.63, 329.63, 392.00], 110.00),   # Am7
-        ([174.61, 220.00, 261.63, 349.23], 87.31),    # Fmaj7
+        ([261.63, 329.63, 392.00, 493.88], 65.41),   # Cmaj7
+        ([196.00, 246.94, 293.66, 392.00], 49.00),   # G
+        ([220.00, 261.63, 329.63, 392.00], 55.00),   # Am7
+        ([174.61, 220.00, 261.63, 349.23], 43.65),   # Fmaj7
     ]
-    ci = 0
-    start = 0.0
-    while start < total:
-        tones, bass = chords[ci % len(chords)]
-        seg_n = min(int(chord_len * SR), n - int(start * SR))
-        if seg_n <= 0:
-            break
+
+    def chord_at(bar):
+        if bar * BAR >= 20.0:            # resolve home for the ending
+            return chords[0]
+        return chords[bar % 4]
+
+    def add(sig, at):
+        i0 = int(at * SR)
+        i1 = min(i0 + len(sig), n)
+        if i1 > i0:
+            music[i0:i1] += sig[:i1 - i0].astype(np.float32)
+
+    # sidechain envelope from the kick pattern (kick enters at 6 s)
+    sc = np.ones(n, dtype=np.float32)
+    bt = 6.0
+    while bt < min(total, 20.5):
+        i0 = int(bt * SR)
+        seg = np.arange(min(int(BEAT * SR), n - i0)) / SR
+        sc[i0:i0 + len(seg)] *= 1 - 0.45 * np.exp(-seg * 9)
+        bt += BEAT
+
+    # pad: whole-bar chords, slow attack
+    pad = np.zeros(n, dtype=np.float32)
+    bar = 0
+    while bar * BAR < total:
+        tones, _ = chord_at(bar)
+        seg_n = min(int(BAR * SR), n - int(bar * BAR * SR))
         st = np.arange(seg_n) / SR
-        env = np.clip(np.minimum(st / 0.9, (chord_len - st) / 0.9), 0, 1)
-        seg = np.zeros(seg_n, dtype=np.float32)
+        env = np.clip(np.minimum(st / 0.5, (BAR - st) / 0.4), 0, 1)
+        seg = np.zeros(seg_n)
         for f in tones:
-            seg += 0.040 * np.sin(2 * np.pi * f * st) + 0.010 * np.sin(2 * np.pi * 2 * f * st)
-        seg += 0.10 * np.sin(2 * np.pi * bass * st)
-        i0 = int(start * SR)
-        music[i0:i0 + seg_n] += (seg * env).astype(np.float32)
-        start += chord_len
-        ci += 1
-    rng = np.random.default_rng(7)
+            seg += 0.030 * np.sin(2 * np.pi * f * st) + 0.008 * np.sin(2 * np.pi * 2 * f * st)
+        pad[int(bar * BAR * SR):int(bar * BAR * SR) + seg_n] += (seg * env)
+        bar += 1
+    music += pad
+
+    # bass: eighth-note groove, from 6 s
+    bt = 6.0
+    while bt < min(total, 21.0):
+        bar_i = int(bt // BAR)
+        tones, root = chord_at(bar_i)
+        eighth = int((bt % BAR) / (BEAT / 2)) % 8
+        freq = root * (1.5 if eighth in (3, 6) else 1.0)
+        dur = 0.21
+        st = np.arange(int(dur * SR)) / SR
+        env = np.exp(-st * 9) * np.minimum(st / 0.008, 1)
+        sig = env * (np.sin(2 * np.pi * freq * st) * 0.13
+                     + np.sin(2 * np.pi * freq * 2 * st) * 0.035
+                     + np.sin(2 * np.pi * freq * 3 * st) * 0.012)
+        add(sig, bt)
+        bt += BEAT / 2
+
+    # arp: 16th notes an octave up, echo, light in the intro
+    arp = np.zeros(n, dtype=np.float32)
     bt = 0.0
     k = 0
-    while bt < total - 0.2:
-        if k % 2 == 0:
-            i0 = int(bt * SR)
-            kn = int(0.12 * SR)
-            kt = np.arange(kn) / SR
-            fr = 82 * np.exp(-kt * 14) + 44
-            music[i0:i0 + kn] += 0.055 * np.sin(2 * np.pi * np.cumsum(fr) / SR) * np.exp(-kt * 24)
-        for eighth in (0.0, 0.5):
-            i0 = int((bt + eighth * beat) * SR)
-            hn = int(0.03 * SR)
-            if i0 + hn < n:
-                noise = rng.standard_normal(hn).astype(np.float32)
-                noise = np.diff(noise, prepend=0)
-                music[i0:i0 + hn] += 0.008 * noise * np.exp(-np.arange(hn) / SR * 90)
-        bt += beat
+    while bt < min(total, 22.5):
+        bar_i = int(bt // BAR)
+        tones, _ = chord_at(bar_i)
+        freq = tones[k % 4] * 2
+        st = np.arange(int(0.12 * SR)) / SR
+        env = np.exp(-st * 26) * np.minimum(st / 0.005, 1)
+        gain = 0.020 if bt >= 6.0 else 0.013
+        sig = gain * env * (np.sin(2 * np.pi * freq * st)
+                            + np.sin(2 * np.pi * freq * 3 * st) / 9)
+        i0 = int(bt * SR)
+        i1 = min(i0 + len(sig), n)
+        arp[i0:i1] += sig[:i1 - i0]
+        bt += BEAT / 2
         k += 1
-    music *= np.clip(t / 0.8, 0, 1) * np.clip((total - t) / 1.6, 0, 1)
+    delay = int(0.375 * SR)
+    arp[delay:] += 0.4 * arp[:-delay].copy()
+    music += arp
+
+    music *= sc  # pump pad/bass/arp against the kick
+
+    # kick: four on the floor, 6 s -> 20.5 s
+    bt = 6.0
+    while bt < min(total, 20.5):
+        st = np.arange(int(0.14 * SR)) / SR
+        fr = 92 * np.exp(-st * 16) + 42
+        add(0.115 * np.sin(2 * np.pi * np.cumsum(fr) / SR) * np.exp(-st * 18), bt)
+        bt += BEAT
+
+    # clap on 2 & 4, from 12 s
+    rng = np.random.default_rng(11)
+    bt = 12.0 + BEAT
+    while bt < min(total, 20.0):
+        st = np.arange(int(0.11 * SR)) / SR
+        noise = rng.standard_normal(len(st))
+        noise = np.convolve(noise, np.ones(8) / 8, mode="same")  # soften
+        add(0.045 * noise * np.exp(-st * 30), bt)
+        bt += BEAT * 2
+
+    # hats: offbeats throughout (lighter before 6 s)
+    bt = BEAT / 2
+    while bt < min(total, 21.0):
+        hn = int(0.03 * SR)
+        noise = rng.standard_normal(hn)
+        noise = np.diff(noise, prepend=0)
+        g = 0.013 if bt >= 6.0 else 0.007
+        add(g * noise * np.exp(-np.arange(hn) / SR * 95), bt)
+        bt += BEAT
+
+    # whooshes rising into each scene cut, small boom under the logo land
+    for cut in (6.0, 12.0, 18.0):
+        wn = int(0.7 * SR)
+        noise = rng.standard_normal(wn)
+        y = np.zeros(wn)
+        alpha = np.linspace(0.015, 0.45, wn)
+        acc = 0.0
+        for i in range(wn):
+            acc += alpha[i] * (noise[i] - acc)
+            y[i] = acc
+        ramp = (np.arange(wn) / wn) ** 2.2
+        add(0.16 * y * ramp, cut - 0.7)
+    st = np.arange(int(0.9 * SR)) / SR
+    add(0.10 * np.sin(2 * np.pi * 55 * st) * np.exp(-st * 6), 18.35)
+
+    t = np.arange(n) / SR
+    music *= np.clip(t / 0.6, 0, 1) * np.clip((total - t) / 1.8, 0, 1)
     return music
 
 
 def build_audio():
-    n = int(TOTAL * SR)
-    vo = np.zeros(n, dtype=np.float32)
-    speech = np.zeros(n, dtype=bool)
-    for name, start in VO_CUES:
-        clip = load_vo(name)
-        edge = int(0.012 * SR)
-        clip[:edge] *= np.linspace(0, 1, edge)
-        clip[-edge:] *= np.linspace(1, 0, edge)
-        i0 = int(start * SR)
-        i1 = min(i0 + len(clip), n)
-        vo[i0:i1] += clip[:i1 - i0]
-        speech[i0:i1] = True
-    # gentle saturation-compression for a fuller, produced commercial sound
-    vo = np.tanh(vo * 1.8) / np.tanh(1.8)
-    music = synth_music(TOTAL)
-    duck = np.where(speech, 0.34, 1.0).astype(np.float32)
-    kernel = np.ones(int(0.18 * SR), dtype=np.float32)
-    kernel /= len(kernel)
-    duck = np.convolve(duck, kernel, mode="same")
-    mix = vo * 0.90 + music * 0.24 * duck
+    mix = synth_music(TOTAL)
     peak = np.abs(mix).max()
-    if peak > 0.97:
-        mix *= 0.97 / peak
+    if peak > 0:
+        mix *= 0.88 / peak
     stereo = np.repeat((mix * 32767).astype(np.int16)[:, None], 2, axis=1)
     with wave.open("output/audio/mix.wav", "wb") as w:
         w.setnchannels(2)
@@ -522,8 +600,7 @@ def main():
     scenes = make_scenes(L)
 
     if "--stills" in sys.argv:
-        probes = [0.5, DURS[0] * 0.55, STARTS[1] + 0.2, STARTS[2] + DURS[2] * 0.6,
-                  STARTS[3] + 1.2, STARTS[3] + OUTRO_CUES["phone"] + 0.8, TOTAL - 1.0]
+        probes = [0.5, 3.6, 6.25, 9.6, 15.6, 20.0, 23.5]
         for t in probes:
             frame_at(t, scenes, L).save(f"output/preview_{fmt}_{t:04.1f}s.png")
         print("stills saved")
