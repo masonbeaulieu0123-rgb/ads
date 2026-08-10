@@ -698,9 +698,18 @@ def build_audio():
     add(_drone_whir() * 1.3, 2.05, pan=(-0.5, 0.5))
 
     if INCLUDE_MUSIC:
-        music = _music() * 2.1
-        mix[:, 0] += music
-        mix[:, 1] += music
+        bed = "output/audio/music_bed.wav"
+        if os.path.exists(bed):
+            # user-supplied track, pre-stretched to the 0.5 s beat grid and loop-filled
+            data, src_sr = sf_.read(bed, dtype="float32")
+            if data.ndim > 1:
+                data = data.mean(axis=1)
+            tt = np.arange(int(len(data) * SR_A / src_sr)) / SR_A
+            music = np.interp(tt, np.arange(len(data)) / src_sr, data)[:n] * 1.05
+        else:
+            music = _music() * 2.1
+        mix[:len(music), 0] += music
+        mix[:len(music), 1] += music
 
     # master bus: gentle drive for loudness, then normalize hot
     mix = np.tanh(mix * 1.5) / np.tanh(1.5)

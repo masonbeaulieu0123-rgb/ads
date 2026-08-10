@@ -7,3 +7,6 @@ output/audio/mix.wav
 assets/voice/kokoro-v1.0.onnx
 assets/voice/voices-v1.0.bin
 assets/sr/*.pb
+assets/music_clip.mp3
+output/audio/music_bed.wav
+output/audio/_*.wav
