@@ -550,11 +550,11 @@ def _music():
     n = int(TOTAL * SR_A)
     m = np.zeros(n, dtype=np.float32)
     bar = BEAT * 4
-    chords = [
-        ([261.63, 329.63, 392.00, 493.88], 65.41),
-        ([196.00, 246.94, 293.66, 392.00], 49.00),
-        ([220.00, 261.63, 329.63, 392.00], 55.00),
-        ([174.61, 220.00, 261.63, 349.23], 43.65),
+    chords = [                                        # A minor — darker, harder
+        ([220.00, 261.63, 329.63, 440.00], 55.00),    # Am
+        ([174.61, 220.00, 261.63, 349.23], 43.65),    # F
+        ([130.81, 196.00, 261.63, 329.63], 65.41),    # C
+        ([196.00, 246.94, 293.66, 392.00], 49.00),    # G
     ]
 
     def chord_at(b):
@@ -575,7 +575,7 @@ def _music():
         sc[i0:i0 + len(seg)] *= 1 - 0.45 * np.exp(-seg * 9)
         bt += BEAT
 
-    b = 0
+    b = 0               # dark pad, low voicing with a slow detune shimmer
     while b * bar < TOTAL:
         tones, _ = chord_at(b)
         seg_n = min(int(bar * SR_A), n - int(b * bar * SR_A))
@@ -583,42 +583,54 @@ def _music():
         env = np.clip(np.minimum(st / 0.4, (bar - st) / 0.35), 0, 1)
         seg = np.zeros(seg_n)
         for f in tones:
-            seg += 0.032 * np.sin(2 * np.pi * f * st) + 0.009 * np.sin(2 * np.pi * 2 * f * st)
+            seg += 0.022 * np.sin(2 * np.pi * f * st) \
+                 + 0.020 * np.sin(2 * np.pi * f * 1.006 * st) \
+                 + 0.007 * np.sin(2 * np.pi * 2 * f * st)
         put(seg * env, b * bar)
         b += 1
 
-    bt = 2.0            # bass eighths
+    bt = 2.0            # distorted 808 bass: gliding eighths with accents
     while bt < min(TOTAL, 15.5):
         tones, root = chord_at(int(bt // bar))
         eighth = int((bt % bar) / (BEAT / 2)) % 8
-        freq = root * (1.5 if eighth in (3, 6) else 1.0)
-        st = np.arange(int(0.20 * SR_A)) / SR_A
-        env = np.exp(-st * 9) * np.minimum(st / 0.008, 1)
-        put(env * (0.14 * np.sin(2 * np.pi * freq * st)
-                   + 0.04 * np.sin(2 * np.pi * freq * 2 * st)), bt)
+        freq = root * (1.5 if eighth in (3, 6) else (2.0 if eighth == 7 else 1.0))
+        st = np.arange(int(0.22 * SR_A)) / SR_A
+        glide = freq * (1 + 0.06 * np.exp(-st * 30))
+        env = np.exp(-st * 7) * np.minimum(st / 0.006, 1)
+        raw = np.sin(2 * np.pi * np.cumsum(glide) / SR_A)
+        put(env * np.tanh(raw * 3.2) * 0.15, bt)
         bt += BEAT / 2
     m *= sc
 
-    bt = 2.0            # four-on-floor kick
+    bt = 2.0            # harder four-on-floor kick, saturated
     while bt < min(TOTAL, 15.5):
-        st = np.arange(int(0.13 * SR_A)) / SR_A
-        fr = 90 * np.exp(-st * 15) + 42
-        put(0.13 * np.sin(2 * np.pi * np.cumsum(fr) / SR_A) * np.exp(-st * 17), bt)
+        st = np.arange(int(0.14 * SR_A)) / SR_A
+        fr = 105 * np.exp(-st * 16) + 44
+        k = np.sin(2 * np.pi * np.cumsum(fr) / SR_A) * np.exp(-st * 15)
+        put(np.tanh(k * 2.6) * 0.15, bt)
         bt += BEAT
     rng = np.random.default_rng(17)
-    bt = 6.0 + BEAT     # claps on 2 & 4
+    bt = 2.0 + BEAT     # sharp snare-claps on 2 & 4 from the drop
     while bt < min(TOTAL, 15.0):
-        st = np.arange(int(0.10 * SR_A)) / SR_A
-        noise = np.convolve(rng.standard_normal(len(st)), np.ones(8) / 8, mode="same")
-        put(0.05 * noise * np.exp(-st * 30), bt)
+        st = np.arange(int(0.12 * SR_A)) / SR_A
+        noise = np.convolve(rng.standard_normal(len(st)), np.ones(3) / 3, mode="same")
+        body = 0.35 * np.sin(2 * np.pi * 185 * st)
+        put((0.062 * noise + 0.02 * body) * np.exp(-st * 26), bt)
         bt += BEAT * 2
-    bt = BEAT / 2       # offbeat hats throughout
+    bt = 0.0            # rolling 16th hats with accents; 32nd stutter at bar ends
     while bt < min(TOTAL, 16.0):
-        hn = int(0.03 * SR_A)
+        in_drop = bt >= 2.0
+        step = BEAT / 4 if in_drop else BEAT / 2
+        sub = int(round((bt % bar) / (BEAT / 4))) % 16
+        g = (0.020 if sub % 4 == 0 else 0.011) if in_drop else 0.008
+        hn = int(0.025 * SR_A)
         noise = np.diff(rng.standard_normal(hn), prepend=0)
-        g = 0.014 if bt >= 2.0 else 0.008
-        put(g * noise * np.exp(-np.arange(hn) / SR_A * 95), bt)
-        bt += BEAT
+        put(g * noise * np.exp(-np.arange(hn) / SR_A * 110), bt)
+        if in_drop and sub == 14:            # stutter into the next bar
+            for k32 in (0.5, 0.75):
+                put(0.014 * noise * np.exp(-np.arange(hn) / SR_A * 130),
+                    bt + k32 * (BEAT / 4))
+        bt += step
 
     t = np.arange(n) / SR_A
     return m * np.clip(t / 0.4, 0, 1) * np.clip((TOTAL - t) / 1.4, 0, 1)
