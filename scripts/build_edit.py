@@ -449,7 +449,7 @@ def frame_at(t, fi):
 
 SR_A = 44100
 
-INCLUDE_VO = False     # flip to True to bring the voiceover back
+INCLUDE_VO = True      # flip to False for the no-voice cut
 INCLUDE_MUSIC = True   # beat-locked backing track under the SFX
 
 VO_CUES = [   # (wav, start) — timed to the on-screen words (am_fenrir pitchman read)
