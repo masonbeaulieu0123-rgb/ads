@@ -46,7 +46,11 @@ def cover_grade(im, before):
 
 
 def sr_upscale(im, cache_name):
-    """4x neural super-resolution (FSRCNN) so full-bleed crops keep real detail."""
+    """4x neural super-resolution so full-bleed crops keep real detail.
+    Prefers the EDSR render (best quality) when present, else FSRCNN."""
+    edsr = f"assets/sr_edsr/{cache_name}.png"
+    if os.path.exists(edsr):
+        return Image.open(edsr).convert("RGB")
     cache = f"assets/sr/{cache_name}.png"
     if os.path.exists(cache):
         return Image.open(cache).convert("RGB")
@@ -140,17 +144,22 @@ def text_sprite(text, size, color, font=None, tracking=0):
 
 
 def pop(frame, sprite, cx, cy, p, overshoot=0.26):
-    """CapCut-style pop-in: sprite lands from an over-scale with a fast ease."""
+    """CapCut-style pop-in: over-scale landing with a micro-rotation settle."""
     if p <= 0:
         return
     e = ease_out(min(p / 0.28, 1.0))
     scale = 1 + overshoot * (1 - e)
+    rot = 2.2 * (1 - e)
     al = min(p / 0.12, 1.0)
-    s = sprite if scale == 1 and al >= 1 else sprite.resize(
-        (max(int(sprite.width * scale), 1), max(int(sprite.height * scale), 1)),
-        Image.BILINEAR)
-    if al < 1:
-        s = faded(s, al)
+    s = sprite
+    if scale != 1 or al < 1 or rot > 0.05:
+        s = sprite.resize(
+            (max(int(sprite.width * scale), 1), max(int(sprite.height * scale), 1)),
+            Image.BILINEAR)
+        if rot > 0.05:
+            s = s.rotate(rot, resample=Image.BILINEAR, expand=True)
+        if al < 1:
+            s = faded(s, al)
     frame.paste(s, (int(cx - s.width / 2), int(cy - s.height / 2)), s)
 
 
@@ -376,8 +385,19 @@ def frame_at(t, fi):
     frame = render(min(lt, dur - 1e-3), dur, t0)
     arr = np.asarray(frame, dtype=np.float32)
     color, amp = flash_amp(t)
+    if amp > 0.25:
+        # chromatic aberration on flash frames: R and B channels split apart
+        px = int(4 + amp * 8)
+        arr[:, :, 0] = np.roll(arr[:, :, 0], px, axis=1)
+        arr[:, :, 2] = np.roll(arr[:, :, 2], -px, axis=1)
     if amp > 0:
         arr = arr * (1 - amp) + np.array(color, np.float32) * amp
+    # one-frame motion ghost on shot-start shakes (fake motion blur)
+    for s0, _, _ in SHOTS:
+        di = int((t - s0) * FPS)
+        if 0 <= di < 2:
+            arr = arr * 0.72 + np.roll(arr, 9 - di * 4, axis=1) * 0.28
+            break
     arr += GRAIN[fi % len(GRAIN)]
     return np.clip(arr, 0, 255).astype(np.uint8)
 
@@ -398,18 +418,36 @@ WHOOSH_ENDS = [2.0, 6.0, 7.5, 10.5, 11.5]
 TICKS = [1.0, 1.5, 3.0, 4.0, 5.0, 9.5, 10.0]
 
 
+_REVERB_IR = None
+
+
+def _reverb(sig):
+    """Short dark reverb tail via a decaying-noise impulse response."""
+    global _REVERB_IR
+    if _REVERB_IR is None:
+        rng = np.random.default_rng(21)
+        irn = int(0.45 * SR_A)
+        ir = rng.standard_normal(irn) * np.exp(-np.arange(irn) / SR_A * 9)
+        _REVERB_IR = np.convolve(ir, np.ones(16) / 16, mode="same") * 0.05
+    wet = np.convolve(sig, _REVERB_IR)[:len(sig) + int(0.45 * SR_A)]
+    out = np.zeros(len(wet))
+    out[:len(sig)] = sig
+    return out + wet
+
+
 def _boom(gain):
-    st = np.arange(int(0.7 * SR_A)) / SR_A
-    fr = 68 * np.exp(-st * 10) + 38
-    sub = np.sin(2 * np.pi * np.cumsum(fr) / SR_A) * np.exp(-st * 7)
-    sub = np.tanh(sub * 2.2)
+    """Layered 808-style hit: gliding sub + saturation + thump + reverb tail."""
+    st = np.arange(int(0.8 * SR_A)) / SR_A
+    fr = 82 * np.exp(-st * 11) + 34
+    sub = np.sin(2 * np.pi * np.cumsum(fr) / SR_A) * np.exp(-st * 5.5)
+    sub = np.tanh(sub * 2.6)
+    mid = np.sin(2 * np.pi * np.cumsum(fr * 2.02) / SR_A) * np.exp(-st * 16) * 0.3
     kn = int(0.05 * SR_A)
     rng = np.random.default_rng(5)
     thump = np.zeros_like(st)
-    noise = rng.standard_normal(kn)
-    noise = np.convolve(noise, np.ones(24) / 24, mode="same")
+    noise = np.convolve(rng.standard_normal(kn), np.ones(24) / 24, mode="same")
     thump[:kn] = noise * np.exp(-np.arange(kn) / SR_A * 120)
-    return gain * (0.16 * sub + 0.10 * thump)
+    return gain * _reverb(0.17 * sub + 0.05 * mid + 0.10 * thump)
 
 
 def _whoosh():
@@ -432,16 +470,53 @@ def _tick():
     return 0.045 * noise * np.exp(-np.arange(tn) / SR_A * 160)
 
 
+def _shutter():
+    """Camera-shutter double click for the AFTER reveals."""
+    tn = int(0.05 * SR_A)
+    rng = np.random.default_rng(13)
+    c1 = np.diff(rng.standard_normal(tn), prepend=0) * np.exp(-np.arange(tn) / SR_A * 220)
+    out = np.zeros(int(0.11 * SR_A))
+    out[:tn] += c1
+    out[int(0.05 * SR_A):int(0.05 * SR_A) + tn] += c1 * 0.7
+    return 0.05 * out
+
+
+def _drone_whir():
+    """Rising quadcopter whir under the 'SEND IN THE DRONE.' card."""
+    dn = int(1.0 * SR_A)
+    st = np.arange(dn) / SR_A
+    f = 130 + 90 * (st / st[-1]) ** 1.4
+    phase = 2 * np.pi * np.cumsum(f) / SR_A
+    saw = (np.sin(phase) + 0.5 * np.sin(2 * phase) + 0.33 * np.sin(3 * phase)
+           + 0.25 * np.sin(4 * phase))
+    trem = 1 + 0.35 * np.sin(2 * np.pi * 33 * st * (f / 150))
+    y = np.zeros(dn)
+    acc = 0.0
+    for i in range(dn):          # one-pole lowpass keeps it soft
+        acc += 0.12 * (saw[i] * trem[i] - acc)
+        y[i] = acc
+    env = np.minimum(st / 0.25, 1.0) * np.minimum((st[-1] - st) / 0.2, 1.0)
+    return 0.045 * y * np.clip(env, 0, 1)
+
+
 def build_audio():
     import soundfile as sf_
     n = int(TOTAL * SR_A)
-    mix = np.zeros(n, dtype=np.float32)
+    mix = np.zeros((n, 2), dtype=np.float32)
 
-    def add(sig, at):
+    def add(sig, at, pan=0.0):
+        """pan: -1 left .. +1 right; (a, b) tuple pans across the clip."""
         i0 = int(at * SR_A)
         i1 = min(i0 + len(sig), n)
-        if i1 > i0:
-            mix[i0:i1] += sig[:i1 - i0].astype(np.float32)
+        if i1 <= i0:
+            return
+        seg = sig[:i1 - i0].astype(np.float32)
+        if isinstance(pan, tuple):
+            p = np.linspace(pan[0], pan[1], len(seg))
+        else:
+            p = np.full(len(seg), pan)
+        mix[i0:i1, 0] += seg * np.sqrt((1 - p) / 2 + 0.5 * (1 - np.abs(p)))
+        mix[i0:i1, 1] += seg * np.sqrt((1 + p) / 2 + 0.5 * (1 - np.abs(p)))
 
     vo = np.zeros(n, dtype=np.float32)
     for name, at in VO_CUES:
@@ -454,28 +529,33 @@ def build_audio():
         i1 = min(i0 + len(clip), n)
         vo[i0:i1] += clip[:i1 - i0]
     vo = np.tanh(vo * 1.7) / np.tanh(1.7)
-    mix += vo * 0.92
+    vo = vo + 0.18 * np.diff(vo, prepend=0)     # presence lift
+    mix[:, 0] += vo * 0.95
+    mix[:, 1] += vo * 0.95
 
     whoosh = _whoosh()
-    for end in WHOOSH_ENDS:
-        add(whoosh, end - 0.6)
+    for i, end in enumerate(WHOOSH_ENDS):
+        add(whoosh, end - 0.6, pan=(-0.7, 0.7) if i % 2 == 0 else (0.7, -0.7))
     for at, g in BOOMS:
         add(_boom(g), at)
     tick = _tick()
-    for at in TICKS:
-        add(tick, at)
+    for i, at in enumerate(TICKS):
+        add(tick, at, pan=0.35 if i % 2 == 0 else -0.35)
+    shutter = _shutter()
+    for at in (3.55, 4.55, 5.55):
+        add(shutter, at, pan=0.2)
+    add(_drone_whir(), 2.05, pan=(-0.5, 0.5))
 
     peak = np.abs(mix).max()
     if peak > 0.92:
         mix *= 0.92 / peak
-    stereo = np.repeat((mix * 32767).astype(np.int16)[:, None], 2, axis=1)
     import wave
     with wave.open("output/audio/edit_mix.wav", "wb") as w:
         w.setnchannels(2)
         w.setsampwidth(2)
         w.setframerate(SR_A)
-        w.writeframes(stereo.tobytes())
-    print(f"edit audio: {TOTAL:.2f}s (VO + SFX, no music)")
+        w.writeframes((mix * 32767).astype(np.int16).tobytes())
+    print(f"edit audio: {TOTAL:.2f}s (stereo VO + SFX, no music)")
 
 
 # ---------------------------------------------------------------- main
@@ -495,7 +575,7 @@ def main():
     silent = "output/_edit_silent.mp4"
     writer = imageio_ffmpeg.write_frames(
         silent, (W, H), fps=FPS, codec="libx264", macro_block_size=1,
-        input_params=[], output_params=["-crf", "18", "-preset", "slow",
+        input_params=[], output_params=["-crf", "17", "-preset", "slow",
                                         "-pix_fmt", "yuv420p"],
     )
     writer.send(None)
