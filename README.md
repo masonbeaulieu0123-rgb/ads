@@ -10,6 +10,9 @@ Instagram video ad builder for DroneShine Cleaning Services (droneshinecleaning.
   with ffmpeg (via `imageio-ffmpeg`)
 - `output/droneshine_reel.mp4` — 1080×1920 (Reels/Stories), 30 fps, 24.5 s, music only
 - `output/droneshine_feed.mp4` — 1080×1350 (4:5 feed) version
+- `output/droneshine_edit.mp4` — 15.5 s CapCut-style rhythm edit, silent (user adds
+  a song; cuts sit on a 0.5 s grid so a ~120 bpm track syncs), built by
+  `scripts/build_edit.py`
 
 ## The ad
 
