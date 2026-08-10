@@ -98,7 +98,7 @@ VIGNETTE = make_vignette()
 GRAIN = []
 _rng = np.random.default_rng(3)
 for _ in range(6):
-    GRAIN.append((_rng.standard_normal((H // 2, W // 2, 1)) * 2.2)
+    GRAIN.append((_rng.standard_normal((H // 2, W // 2, 1)) * 1.3)
                  .repeat(2, axis=0).repeat(2, axis=1))
 
 
@@ -408,6 +408,8 @@ def frame_at(t, fi):
 
 SR_A = 44100
 
+INCLUDE_VO = False   # SFX-only mix; flip to True to bring the voiceover back
+
 VO_CUES = [   # (wav, start) — timed to the on-screen words (am_fenrir pitchman read)
     ("e1", 0.10), ("e2", 1.10), ("e3", 2.10), ("e4", 3.60),
     ("e5", 6.05), ("e6", 7.95), ("e7", 10.55), ("e8", 12.00),
@@ -519,7 +521,7 @@ def build_audio():
         mix[i0:i1, 1] += seg * np.sqrt((1 + p) / 2 + 0.5 * (1 - np.abs(p)))
 
     vo = np.zeros(n, dtype=np.float32)
-    for name, at in VO_CUES:
+    for name, at in (VO_CUES if INCLUDE_VO else []):
         data, src_sr = sf_.read(f"output/audio/{name}.wav", dtype="float32")
         if data.ndim > 1:
             data = data.mean(axis=1)
