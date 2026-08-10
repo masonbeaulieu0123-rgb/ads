@@ -124,41 +124,51 @@ HERO, HERO_BG = load_photo("assets/commercial/extra.heic")
 UF_FRAMES, UF_BG = load_video_frames("assets/commercial/frames_uf")
 
 
-def load_uf_pair():
-    """UF before/after side-by-side composite -> upscaled halves + backdrop."""
-    src = Image.open("assets/commercial/uf_ba.jpg").convert("RGB")
-    half = src.width // 2
-    halves = []
-    for name, box in (("before", (0, 0, half, src.height)),
-                      ("after", (src.width - half, 0, src.width, src.height))):
-        im = sr_upscale(src.crop(box), f"uf_ba_{name}")
-        im = ImageEnhance.Contrast(im).enhance(1.03)
-        halves.append(im.resize((MASTER_W, round(im.height * MASTER_W / im.width)),
-                                Image.LANCZOS))
-    return halves[0], halves[1], blur_backdrop(halves[1])
-
-
-UF_BEFORE, UF_AFTER, UF_BA_BG = load_uf_pair()
+UF_HAS_PHOTO = os.path.exists("assets/commercial/uf_ba.jpg")
+if UF_HAS_PHOTO:
+    def _load_uf_pair():
+        src = Image.open("assets/commercial/uf_ba.jpg").convert("RGB")
+        half = src.width // 2
+        halves = []
+        for name, box in (("before", (0, 0, half, src.height)),
+                          ("after", (src.width - half, 0, src.width, src.height))):
+            im = sr_upscale(src.crop(box), f"uf_ba_{name}")
+            im = ImageEnhance.Contrast(im).enhance(1.03)
+            halves.append(im.resize((MASTER_W, round(im.height * MASTER_W / im.width)),
+                                    Image.LANCZOS))
+        return halves[0], halves[1], blur_backdrop(halves[1])
+    UF_BEFORE, UF_AFTER, UF_BA_BG = _load_uf_pair()
+else:
+    UF2_FRAMES, UF2_BG = load_video_frames("assets/commercial/frames_uf2")
 
 
 def shot_uf_reveal():
-    """Before flashes to after; University of Florida credit + 2-day restoration."""
+    """University of Florida credit — before/after photo when available,
+    else the credit runs over a second segment of the cleaning video."""
     def render(t, d, t0):
-        frame = UF_BA_BG.copy()
-        swap = 0.6
-        if t < swap:
-            paste_card(frame, UF_BEFORE, 0.985 + 0.015 * t / swap)
+        if UF_HAS_PHOTO:
+            frame = UF_BA_BG.copy()
+            swap = 0.6
+            if t < swap:
+                paste_card(frame, UF_BEFORE, 0.985 + 0.015 * t / swap)
+            else:
+                u = (t - swap) / (d - swap)
+                dx, dy = shake_at(t0 + t, t0 + swap, 0.8)
+                paste_card(frame, UF_AFTER, 0.985 + 0.015 * u, dx, dy)
+            title_at = swap + 0.1
         else:
-            u = (t - swap) / (d - swap)
-            dx, dy = shake_at(t0 + t, t0 + swap, 0.8)
-            x, y, w, h = paste_card(frame, UF_AFTER, 0.985 + 0.015 * u, dx, dy)
+            frame = UF2_BG.copy()
+            dx, dy = shake_at(t0 + t, t0)
+            idx = min(int(t * 15), len(UF2_FRAMES) - 1)
+            paste_card(frame, UF2_FRAMES[idx], 842 / 1080, dx, dy)
+            title_at = 0.15
         frame.paste(VIGNETTE, (0, 0), VIGNETTE)
-        if t >= swap + 0.1:
+        if t >= title_at:
             pop(frame, sprite("uf-title", "UNIVERSITY OF FLORIDA", 92, WHITE),
-                W / 2, 520, (t - swap - 0.1) / 0.4)
-        if t >= swap + 0.45:
+                W / 2, 520, (t - title_at) / 0.4)
+        if t >= title_at + 0.35:
             pop(frame, sprite("uf-sub", "FULL RESTORATION • 2 DAYS", 58, GREEN),
-                W / 2, 1420, (t - swap - 0.45) / 0.4)
+                W / 2, 1420, (t - title_at - 0.35) / 0.4)
         small_mark(frame, (200, 206, 201))
         return frame
     return render
