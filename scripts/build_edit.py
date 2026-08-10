@@ -122,7 +122,46 @@ def load_video_frames(dirname):
 
 HERO, HERO_BG = load_photo("assets/commercial/extra.heic")
 UF_FRAMES, UF_BG = load_video_frames("assets/commercial/frames_uf")
-BH_FRAMES, BH_BG = load_video_frames("assets/commercial/frames_bh")
+
+
+def load_uf_pair():
+    """UF before/after side-by-side composite -> upscaled halves + backdrop."""
+    src = Image.open("assets/commercial/uf_ba.jpg").convert("RGB")
+    half = src.width // 2
+    halves = []
+    for name, box in (("before", (0, 0, half, src.height)),
+                      ("after", (src.width - half, 0, src.width, src.height))):
+        im = sr_upscale(src.crop(box), f"uf_ba_{name}")
+        im = ImageEnhance.Contrast(im).enhance(1.03)
+        halves.append(im.resize((MASTER_W, round(im.height * MASTER_W / im.width)),
+                                Image.LANCZOS))
+    return halves[0], halves[1], blur_backdrop(halves[1])
+
+
+UF_BEFORE, UF_AFTER, UF_BA_BG = load_uf_pair()
+
+
+def shot_uf_reveal():
+    """Before flashes to after; University of Florida credit + 2-day restoration."""
+    def render(t, d, t0):
+        frame = UF_BA_BG.copy()
+        swap = 0.6
+        if t < swap:
+            paste_card(frame, UF_BEFORE, 0.985 + 0.015 * t / swap)
+        else:
+            u = (t - swap) / (d - swap)
+            dx, dy = shake_at(t0 + t, t0 + swap, 0.8)
+            x, y, w, h = paste_card(frame, UF_AFTER, 0.985 + 0.015 * u, dx, dy)
+        frame.paste(VIGNETTE, (0, 0), VIGNETTE)
+        if t >= swap + 0.1:
+            pop(frame, sprite("uf-title", "UNIVERSITY OF FLORIDA", 92, WHITE),
+                W / 2, 520, (t - swap - 0.1) / 0.4)
+        if t >= swap + 0.45:
+            pop(frame, sprite("uf-sub", "FULL RESTORATION • 2 DAYS", 58, GREEN),
+                W / 2, 1420, (t - swap - 0.45) / 0.4)
+        small_mark(frame, (200, 206, 201))
+        return frame
+    return render
 
 _MASK_CACHE = {}
 _SHADOW_BASE = None
@@ -425,21 +464,21 @@ SHOTS = [
     (12 * B, 16 * B, shot_photo_word(HERO, HERO_BG, "OR COMMERCIAL.", WHITE, size=118)),
     (16 * B, 22 * B, shot_video_word(UF_FRAMES, UF_BG, "BUILDING FACADES.", GREEN,
                                      842 / 1080, size=104, word_y=1700)),
-    (22 * B, 25 * B, shot_video_word(BH_FRAMES, BH_BG, "AND MORE.", WHITE, 1.0)),
-    (25 * B, 30 * B, shot_satisfying(0)),
-    (30 * B, 31 * B, shot_photo_word(PAIRS[1][1], BGS[1][1], "CLEAN.", WHITE)),
-    (31 * B, 32 * B, shot_photo_word(PAIRS[2][1], BGS[2][1], "SPOTLESS.", GREEN)),
-    (32 * B, 34 * B, shot_card_words([
+    (22 * B, 28 * B, shot_uf_reveal()),
+    (28 * B, 33 * B, shot_satisfying(0)),
+    (33 * B, 34 * B, shot_photo_word(PAIRS[1][1], BGS[1][1], "CLEAN.", WHITE)),
+    (34 * B, 35 * B, shot_photo_word(PAIRS[2][1], BGS[2][1], "SPOTLESS.", GREEN)),
+    (35 * B, 37 * B, shot_card_words([
         ("STATEWIDE", WHITE, 148, 830, 0.06),
         ("IN FLORIDA.", GREEN, 148, 1020, 0.32),
     ])),
-    (34 * B, 48 * B, shot_end_card()),
+    (37 * B, 51 * B, shot_end_card()),
 ]
 TOTAL = SHOTS[-1][1]
 
-WHITE_FLASH = [4 * B, 12 * B, 16 * B, 22 * B, 25 * B, 32 * B, 34 * B]
-GREEN_FLASH = [7 * B, 9 * B, 11 * B]
-MINI_FLASH = [30 * B, 31 * B]
+WHITE_FLASH = [4 * B, 12 * B, 16 * B, 22 * B, 28 * B, 35 * B, 37 * B]
+GREEN_FLASH = [7 * B, 9 * B, 11 * B, 22 * B + 0.6]
+MINI_FLASH = [33 * B, 34 * B]
 
 
 def flash_amp(t):
@@ -496,14 +535,14 @@ INCLUDE_MUSIC = True   # beat-locked backing track under the SFX
 
 VO_CUES = [   # (wav, start) — timed to the on-screen words
     ("e1", 0.10), ("e2", 1.10), ("e3", 2.10), ("e4", 3.60),
-    ("eR", 5.05), ("eC", 6.90), ("eC2", 8.55), ("eC3", 11.05),
-    ("e5", 13.30), ("e6", 15.05), ("e7", 16.70), ("e8", 18.40),
+    ("eR", 5.05), ("eC", 6.90), ("eC2", 8.55), ("eUF", 11.75),
+    ("e5", 15.00), ("e6", 16.55), ("e7", 18.20), ("e8", 19.90),
 ]
 BOOMS = [(0.08, 1.0), (2.02, 1.1), (3.5, 0.85), (4.5, 0.85), (5.5, 0.85),
-         (6.02, 1.0), (8.02, 1.0), (11.02, 0.95), (12.52, 0.95),
-         (15.02, 0.7), (15.52, 0.7), (16.02, 0.95), (17.02, 1.1)]
-WHOOSH_ENDS = [2.0, 6.0, 8.0, 12.5, 16.0, 17.0]
-TICKS = [1.0, 1.5, 3.0, 4.0, 5.0, 15.0, 15.5]
+         (6.02, 1.0), (8.02, 1.0), (11.02, 0.95), (11.62, 0.9), (14.02, 0.95),
+         (16.52, 0.7), (17.02, 0.7), (17.52, 0.95), (18.52, 1.1)]
+WHOOSH_ENDS = [2.0, 6.0, 8.0, 11.0, 14.0, 17.5, 18.5]
+TICKS = [1.0, 1.5, 3.0, 4.0, 5.0, 16.5, 17.0]
 
 
 _REVERB_IR = None
