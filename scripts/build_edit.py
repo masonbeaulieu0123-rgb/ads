@@ -16,7 +16,7 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
 
 sys.path.insert(0, os.path.dirname(__file__))
 from build_ad import (anton, archivo, draw_tracked, pill, faded, lerp_color,
-                      load_logo, ease_out, smoothstep,
+                      load_logo, ease_out, smoothstep, rounded_mask,
                       BG_TOP, BG_BOT, GREEN, WHITE, GRAY, PHONE, SITE)
 
 W, H = 1080, 1920
@@ -27,12 +27,7 @@ BEAT = 0.5          # cut grid; matches a 120 bpm track
 
 # ---------------------------------------------------------------- assets
 
-def cover_grade(im, before):
-    s = max(W * HEADROOM / im.width, H * HEADROOM / im.height)
-    im = im.resize((round(im.width * s), round(im.height * s)), Image.LANCZOS)
-    x = (im.width - int(W * HEADROOM)) // 2
-    y = (im.height - int(H * HEADROOM)) // 2
-    im = im.crop((x, y, x + int(W * HEADROOM), y + int(H * HEADROOM)))
+def grade(im, before):
     im = im.filter(ImageFilter.UnsharpMask(radius=2, percent=30, threshold=2))
     if before:
         im = ImageEnhance.Color(im).enhance(0.82)
@@ -43,6 +38,17 @@ def cover_grade(im, before):
         im = ImageEnhance.Brightness(im).enhance(1.03)
         im = ImageEnhance.Contrast(im).enhance(1.06)
     return im
+
+
+def blur_backdrop(im):
+    """Blurred, darkened cover fill behind the full-photo card."""
+    s = max(W / im.width, H / im.height)
+    bg = im.resize((round(im.width * s), round(im.height * s)), Image.BILINEAR)
+    x = (bg.width - W) // 2
+    y = (bg.height - H) // 2
+    bg = bg.crop((x, y, x + W, y + H)).filter(ImageFilter.GaussianBlur(26))
+    bg = ImageEnhance.Brightness(bg).enhance(0.42)
+    return ImageEnhance.Color(bg).enhance(0.80)
 
 
 def sr_upscale(im, cache_name):
@@ -65,22 +71,56 @@ def sr_upscale(im, cache_name):
     return up
 
 
+MASTER_W = 1160      # full-photo masters keep a little headroom over the 1080 canvas
+
+
 def load_pairs():
-    pairs = []
+    pairs, bgs = [], []
     for path in ("assets/ba_lake_house.jpg", "assets/ba_pool_house.jpg",
                  "assets/ba_gray_roof.jpg"):
         stem = os.path.splitext(os.path.basename(path))[0]
         src = Image.open(path).convert("RGB")
         half = src.width // 2
-        before = sr_upscale(src.crop((0, 0, half, src.height)), f"{stem}_before")
-        after = sr_upscale(src.crop((src.width - half, 0, src.width, src.height)),
-                           f"{stem}_after")
-        pairs.append((cover_grade(before, True), cover_grade(after, False)))
-    return pairs
+        halves = []
+        for name, box, before in (("before", (0, 0, half, src.height), True),
+                                  ("after", (src.width - half, 0, src.width, src.height), False)):
+            im = grade(sr_upscale(src.crop(box), f"{stem}_{name}"), before)
+            halves.append(im.resize((MASTER_W, round(im.height * MASTER_W / im.width)),
+                                    Image.LANCZOS))
+        pairs.append(tuple(halves))
+        bgs.append(tuple(blur_backdrop(h) for h in halves))
+    return pairs, bgs
 
 
-PAIRS = load_pairs()
+PAIRS, BGS = load_pairs()
 LOGO = load_logo(660)
+
+_MASK_CACHE = {}
+_SHADOW_BASE = None
+
+
+def paste_card(frame, img, scale, dx=0.0, dy=0.0, radius=14):
+    """Center the FULL photo at `scale` x canvas width on the blurred backdrop."""
+    global _SHADOW_BASE
+    w = max(2, int(W * scale))
+    h = int(img.height * w / img.width)
+    x = (W - w) // 2 + int(dx)
+    y = (H - h) // 2 + int(dy)
+    if _SHADOW_BASE is None:
+        sh = Image.new("RGBA", (1080 + 100, 1060 + 100), (0, 0, 0, 0))
+        ImageDraw.Draw(sh).rounded_rectangle([50, 50, 50 + 1079, 50 + 1059], 22,
+                                             fill=(0, 0, 0, 120))
+        _SHADOW_BASE = sh.filter(ImageFilter.GaussianBlur(20))
+    sh = _SHADOW_BASE.resize((w + 100, h + 100), Image.BILINEAR)
+    frame.paste(sh, (x - 50, y - 50 + 12), sh)
+    card = img.resize((w, h), Image.LANCZOS)
+    key = (w, h, radius)
+    if key not in _MASK_CACHE:
+        if len(_MASK_CACHE) > 64:
+            _MASK_CACHE.clear()
+        _MASK_CACHE[key] = rounded_mask((w, h), radius)
+    frame.paste(card, (x, y), _MASK_CACHE[key])
+    return x, y, w, h
 
 
 def make_vignette():
@@ -118,14 +158,6 @@ END_BG = make_gradient(650)
 
 
 # ---------------------------------------------------------------- helpers
-
-def view(cov, zoom, dx=0.0, dy=0.0):
-    a = HEADROOM / min(zoom, HEADROOM)
-    c = (cov.width - W * a) / 2 + dx
-    f = (cov.height - H * a) / 2 + dy
-    return cov.transform((W, H), Image.AFFINE, (a, 0, c, 0, a, f),
-                         resample=Image.BICUBIC)
-
 
 def text_sprite(text, size, color, font=None, tracking=0):
     font = font or anton(size)
@@ -196,13 +228,14 @@ def sprite(key, *args, **kw):
     return SPRITES[key]
 
 
-def shot_photo_word(cov, word, color, zoom_from, zoom_to, accel=1.6, size=150):
+def shot_photo_word(img, bg, word, color, size=150):
     def render(t, d, t0):
-        z = zoom_from + (zoom_to - zoom_from) * (t / d) ** accel
+        frame = bg.copy()
         dx, dy = shake_at(t0 + t, t0)
-        frame = view(cov, z, dx, dy)
+        s = 0.955 + 0.045 * ease_out(min(t / 0.35, 1.0)) + 0.004 * (t / d)
+        paste_card(frame, img, min(s, 1.0), dx, dy)
         frame.paste(VIGNETTE, (0, 0), VIGNETTE)
-        pop(frame, sprite(word, word, size, color), W / 2, 880, t / 0.4)
+        pop(frame, sprite(word, word, size, color), W / 2, 930, t / 0.4)
         small_mark(frame, (200, 206, 201))
         return frame
     return render
@@ -210,22 +243,28 @@ def shot_photo_word(cov, word, color, zoom_from, zoom_to, accel=1.6, size=150):
 
 def shot_transform(pair_idx, drift):
     before, after = PAIRS[pair_idx]
+    bg_b, bg_a = BGS[pair_idx]
     after_pill = pill("AFTER", archivo(34, 700), (8, 14, 9), (*GREEN, 245),
                       pad_x=30, pad_y=14, tracking=3)
 
     def render(t, d, t0):
         half = d * 0.5
         if t < half:
-            frame = view(before, 1.16 + 0.05 * t / half, drift * (t / half), 0)
+            frame = bg_b.copy()
+            s = 0.975 + 0.02 * (t / half)
+            x, y, w, h = paste_card(frame, before, s, drift * (t / half), 0)
         else:
             u = (t - half) / (d - half)
+            frame = bg_a.copy()
             dx, dy = shake_at(t0 + t, t0 + half, 0.8)
-            frame = view(after, 1.10 + 0.07 * u, -drift * (1 - u) + dx, dy)
+            s = 0.985 + 0.015 * u
+            x, y, w, h = paste_card(frame, after, s, -drift * (1 - u) + dx, dy)
             p = after_pill
             e = ease_out(min((t - half) / 0.22, 1.0))
-            s = 1 + 0.35 * (1 - e)
-            ps = p.resize((int(p.width * s), int(p.height * s)), Image.BILINEAR)
-            frame.paste(ps, (int(W / 2 - ps.width / 2), int(1480 - ps.height / 2)), ps)
+            ps = p.resize((int(p.width * (1 + 0.35 * (1 - e))),
+                           int(p.height * (1 + 0.35 * (1 - e)))), Image.BILINEAR)
+            frame.paste(ps, (int(W / 2 - ps.width / 2),
+                             int(y + h - 46 - ps.height / 2)), ps)
         frame.paste(VIGNETTE, (0, 0), VIGNETTE)
         small_mark(frame, (200, 206, 201))
         return frame
@@ -250,28 +289,30 @@ def shot_card_words(lines):
 
 def shot_satisfying(pair_idx):
     before, after = PAIRS[pair_idx]
+    bg = BGS[pair_idx][1]
 
     def render(t, d, t0):
-        z = 1.08 + 0.05 * t / d
-        frame = view(before, z)
+        frame = bg.copy()
+        s = 0.985 + 0.015 * (t / d)
+        # compose the slow wipe inside the full-photo card
+        w = int(W * s)
+        h = int(before.height * w / before.width)
+        card = before.resize((w, h), Image.LANCZOS)
         wt = smoothstep((t - 0.15) / (d - 0.65))
-        wx = int(wt * W)
+        wx = int(wt * w)
         if wx > 0:
-            av = view(after, z)
-            frame.paste(av.crop((0, 0, wx, H)), (0, 0))
-            if 0 < wx < W:
-                pd = ImageDraw.Draw(frame, "RGBA")
-                pd.rectangle([wx - 26, 0, wx - 2, H], fill=(0, 0, 0, 40))
-                pd.rectangle([wx - 2, 0, wx + 1, H], fill=(255, 255, 255, 240))
+            av = after.resize((w, h), Image.LANCZOS)
+            card.paste(av.crop((0, 0, wx, h)), (0, 0))
+            if 0 < wx < w:
+                pd = ImageDraw.Draw(card, "RGBA")
+                pd.rectangle([wx - 24, 0, wx - 2, h], fill=(0, 0, 0, 40))
+                pd.rectangle([wx - 2, 0, wx + 1, h], fill=(255, 255, 255, 240))
+        x, y, w, h = paste_card(frame, card, s)
         frame.paste(VIGNETTE, (0, 0), VIGNETTE)
-        # cinematic letterbox
-        bar = int(150 * ease_out(min(t / 0.35, 1.0)))
         pd = ImageDraw.Draw(frame)
-        pd.rectangle([0, 0, W, bar], fill=(5, 6, 5))
-        pd.rectangle([0, H - bar, W, H], fill=(5, 6, 5))
         if t > 0.5:
             al = ease_out((t - 0.5) / 0.5)
-            draw_tracked(pd, (W / 2, H - bar - 64), "THE DRONE DIFFERENCE",
+            draw_tracked(pd, (W / 2, y + h + 72), "THE DRONE DIFFERENCE",
                          archivo(30, 600), lerp_color((5, 6, 5), (222, 228, 223), al),
                          tracking=12)
         return frame
@@ -328,9 +369,9 @@ def shot_end_card():
 
 B = BEAT
 SHOTS = [
-    (0 * B, 2 * B, shot_photo_word(PAIRS[0][0], "DIRTY ROOF?", WHITE, 1.06, 1.20)),
-    (2 * B, 3 * B, shot_photo_word(PAIRS[1][0], "MOLD.", WHITE, 1.24, 1.14, accel=1.0)),
-    (3 * B, 4 * B, shot_photo_word(PAIRS[2][0], "GRIME.", WHITE, 1.10, 1.22)),
+    (0 * B, 2 * B, shot_photo_word(PAIRS[0][0], BGS[0][0], "DIRTY ROOF?", WHITE)),
+    (2 * B, 3 * B, shot_photo_word(PAIRS[1][0], BGS[1][0], "MOLD.", WHITE)),
+    (3 * B, 4 * B, shot_photo_word(PAIRS[2][0], BGS[2][0], "GRIME.", WHITE)),
     (4 * B, 6 * B, shot_card_words([
         ("SEND IN", WHITE, 150, 810, 0.06),
         ("THE DRONE.", GREEN, 150, 1010, 0.32),
@@ -344,8 +385,8 @@ SHOTS = [
         ("CHEAPER.", GREEN, 140, 1100, 1.0),
     ])),
     (15 * B, 19 * B, shot_satisfying(0)),
-    (19 * B, 20 * B, shot_photo_word(PAIRS[1][1], "CLEAN.", WHITE, 1.12, 1.22)),
-    (20 * B, 21 * B, shot_photo_word(PAIRS[2][1], "SPOTLESS.", GREEN, 1.20, 1.10, accel=1.0)),
+    (19 * B, 20 * B, shot_photo_word(PAIRS[1][1], BGS[1][1], "CLEAN.", WHITE)),
+    (20 * B, 21 * B, shot_photo_word(PAIRS[2][1], BGS[2][1], "SPOTLESS.", GREEN)),
     (21 * B, 23 * B, shot_card_words([
         ("STATEWIDE", WHITE, 148, 830, 0.06),
         ("IN FLORIDA.", GREEN, 148, 1020, 0.32),
