@@ -449,7 +449,8 @@ def frame_at(t, fi):
 
 SR_A = 44100
 
-INCLUDE_VO = False   # SFX-only mix; flip to True to bring the voiceover back
+INCLUDE_VO = False     # flip to True to bring the voiceover back
+INCLUDE_MUSIC = True   # beat-locked backing track under the SFX
 
 VO_CUES = [   # (wav, start) — timed to the on-screen words (am_fenrir pitchman read)
     ("e1", 0.10), ("e2", 1.10), ("e3", 2.10), ("e4", 3.60),
@@ -542,6 +543,87 @@ def _drone_whir():
     return 0.045 * y * np.clip(env, 0, 1)
 
 
+def _music():
+    """Beat-locked backing track: builds with the edit's sections.
+    0-2 s pad+hats intro, kick+bass from the 'SEND IN THE DRONE' card (2 s),
+    claps from 'SAFER FASTER CHEAPER' (6 s), strips back under the end card."""
+    n = int(TOTAL * SR_A)
+    m = np.zeros(n, dtype=np.float32)
+    bar = BEAT * 4
+    chords = [
+        ([261.63, 329.63, 392.00, 493.88], 65.41),
+        ([196.00, 246.94, 293.66, 392.00], 49.00),
+        ([220.00, 261.63, 329.63, 392.00], 55.00),
+        ([174.61, 220.00, 261.63, 349.23], 43.65),
+    ]
+
+    def chord_at(b):
+        return chords[0] if b * bar >= 14.0 else chords[b % 4]
+
+    def put(sig, at):
+        i0 = int(at * SR_A)
+        i1 = min(i0 + len(sig), n)
+        if i1 > i0:
+            m[i0:i1] += sig[:i1 - i0].astype(np.float32)
+
+    # sidechain pump driven by the kick
+    sc = np.ones(n, dtype=np.float32)
+    bt = 2.0
+    while bt < min(TOTAL, 15.5):
+        i0 = int(bt * SR_A)
+        seg = np.arange(min(int(BEAT * SR_A), n - i0)) / SR_A
+        sc[i0:i0 + len(seg)] *= 1 - 0.45 * np.exp(-seg * 9)
+        bt += BEAT
+
+    b = 0
+    while b * bar < TOTAL:
+        tones, _ = chord_at(b)
+        seg_n = min(int(bar * SR_A), n - int(b * bar * SR_A))
+        st = np.arange(seg_n) / SR_A
+        env = np.clip(np.minimum(st / 0.4, (bar - st) / 0.35), 0, 1)
+        seg = np.zeros(seg_n)
+        for f in tones:
+            seg += 0.032 * np.sin(2 * np.pi * f * st) + 0.009 * np.sin(2 * np.pi * 2 * f * st)
+        put(seg * env, b * bar)
+        b += 1
+
+    bt = 2.0            # bass eighths
+    while bt < min(TOTAL, 15.5):
+        tones, root = chord_at(int(bt // bar))
+        eighth = int((bt % bar) / (BEAT / 2)) % 8
+        freq = root * (1.5 if eighth in (3, 6) else 1.0)
+        st = np.arange(int(0.20 * SR_A)) / SR_A
+        env = np.exp(-st * 9) * np.minimum(st / 0.008, 1)
+        put(env * (0.14 * np.sin(2 * np.pi * freq * st)
+                   + 0.04 * np.sin(2 * np.pi * freq * 2 * st)), bt)
+        bt += BEAT / 2
+    m *= sc
+
+    bt = 2.0            # four-on-floor kick
+    while bt < min(TOTAL, 15.5):
+        st = np.arange(int(0.13 * SR_A)) / SR_A
+        fr = 90 * np.exp(-st * 15) + 42
+        put(0.13 * np.sin(2 * np.pi * np.cumsum(fr) / SR_A) * np.exp(-st * 17), bt)
+        bt += BEAT
+    rng = np.random.default_rng(17)
+    bt = 6.0 + BEAT     # claps on 2 & 4
+    while bt < min(TOTAL, 15.0):
+        st = np.arange(int(0.10 * SR_A)) / SR_A
+        noise = np.convolve(rng.standard_normal(len(st)), np.ones(8) / 8, mode="same")
+        put(0.05 * noise * np.exp(-st * 30), bt)
+        bt += BEAT * 2
+    bt = BEAT / 2       # offbeat hats throughout
+    while bt < min(TOTAL, 16.0):
+        hn = int(0.03 * SR_A)
+        noise = np.diff(rng.standard_normal(hn), prepend=0)
+        g = 0.014 if bt >= 2.0 else 0.008
+        put(g * noise * np.exp(-np.arange(hn) / SR_A * 95), bt)
+        bt += BEAT
+
+    t = np.arange(n) / SR_A
+    return m * np.clip(t / 0.4, 0, 1) * np.clip((TOTAL - t) / 1.4, 0, 1)
+
+
 def build_audio():
     import soundfile as sf_
     n = int(TOTAL * SR_A)
@@ -578,27 +660,34 @@ def build_audio():
 
     whoosh = _whoosh()
     for i, end in enumerate(WHOOSH_ENDS):
-        add(whoosh, end - 0.6, pan=(-0.7, 0.7) if i % 2 == 0 else (0.7, -0.7))
+        add(whoosh * 1.4, end - 0.6, pan=(-0.7, 0.7) if i % 2 == 0 else (0.7, -0.7))
     for at, g in BOOMS:
-        add(_boom(g), at)
+        add(_boom(g * 1.35), at)
     tick = _tick()
     for i, at in enumerate(TICKS):
-        add(tick, at, pan=0.35 if i % 2 == 0 else -0.35)
+        add(tick * 1.3, at, pan=0.35 if i % 2 == 0 else -0.35)
     shutter = _shutter()
     for at in (3.55, 4.55, 5.55):
-        add(shutter, at, pan=0.2)
-    add(_drone_whir(), 2.05, pan=(-0.5, 0.5))
+        add(shutter * 1.3, at, pan=0.2)
+    add(_drone_whir() * 1.3, 2.05, pan=(-0.5, 0.5))
 
+    if INCLUDE_MUSIC:
+        music = _music() * 2.1
+        mix[:, 0] += music
+        mix[:, 1] += music
+
+    # master bus: gentle drive for loudness, then normalize hot
+    mix = np.tanh(mix * 1.5) / np.tanh(1.5)
     peak = np.abs(mix).max()
-    if peak > 0.92:
-        mix *= 0.92 / peak
+    if peak > 0:
+        mix *= 0.95 / peak
     import wave
     with wave.open("output/audio/edit_mix.wav", "wb") as w:
         w.setnchannels(2)
         w.setsampwidth(2)
         w.setframerate(SR_A)
         w.writeframes((mix * 32767).astype(np.int16).tobytes())
-    print(f"edit audio: {TOTAL:.2f}s (stereo VO + SFX, no music)")
+    print(f"edit audio: {TOTAL:.2f}s (VO={INCLUDE_VO}, music={INCLUDE_MUSIC})")
 
 
 # ---------------------------------------------------------------- main
