@@ -95,6 +95,35 @@ def load_pairs():
 PAIRS, BGS = load_pairs()
 LOGO = load_logo(660)
 
+
+def load_photo(path, max_h=1500):
+    """Single commercial photo -> (card master, blurred backdrop)."""
+    if path.endswith(".heic"):
+        from pillow_heif import register_heif_opener
+        register_heif_opener()
+    im = Image.open(path).convert("RGB")
+    w = MASTER_W
+    h = round(im.height * w / im.width)
+    if h > max_h:
+        h = max_h
+        w = round(im.width * h / im.height)
+    im = im.resize((w, h), Image.LANCZOS)
+    im = im.filter(ImageFilter.UnsharpMask(radius=2, percent=25, threshold=2))
+    im = ImageEnhance.Contrast(im).enhance(1.04)
+    return im, blur_backdrop(im)
+
+
+def load_video_frames(dirname):
+    """Pre-extracted 15 fps frame folder -> (frames, backdrop)."""
+    files = sorted(os.listdir(dirname))
+    frames = [Image.open(os.path.join(dirname, f)).convert("RGB") for f in files]
+    return frames, blur_backdrop(frames[0])
+
+
+HERO, HERO_BG = load_photo("assets/commercial/extra.heic")
+UF_FRAMES, UF_BG = load_video_frames("assets/commercial/frames_uf")
+BH_FRAMES, BH_BG = load_video_frames("assets/commercial/frames_bh")
+
 _MASK_CACHE = {}
 _SHADOW_BASE = None
 
@@ -113,7 +142,7 @@ def paste_card(frame, img, scale, dx=0.0, dy=0.0, radius=14):
         _SHADOW_BASE = sh.filter(ImageFilter.GaussianBlur(20))
     sh = _SHADOW_BASE.resize((w + 100, h + 100), Image.BILINEAR)
     frame.paste(sh, (x - 50, y - 50 + 12), sh)
-    card = img.resize((w, h), Image.LANCZOS)
+    card = img if img.size == (w, h) else img.resize((w, h), Image.LANCZOS)
     key = (w, h, radius)
     if key not in _MASK_CACHE:
         if len(_MASK_CACHE) > 64:
@@ -236,6 +265,20 @@ def shot_photo_word(img, bg, word, color, size=150):
         paste_card(frame, img, min(s, 1.0), dx, dy)
         frame.paste(VIGNETTE, (0, 0), VIGNETTE)
         pop(frame, sprite(word, word, size, color), W / 2, 930, t / 0.4)
+        small_mark(frame, (200, 206, 201))
+        return frame
+    return render
+
+
+def shot_video_word(frames, bg, word, color, card_scale, size=140, word_y=None):
+    """Real footage playing inside the card, word pop on top."""
+    def render(t, d, t0):
+        frame = bg.copy()
+        dx, dy = shake_at(t0 + t, t0)
+        idx = min(int(t * 15), len(frames) - 1)
+        paste_card(frame, frames[idx], card_scale, dx, dy)
+        frame.paste(VIGNETTE, (0, 0), VIGNETTE)
+        pop(frame, sprite(word, word, size, color), W / 2, word_y or 930, t / 0.4)
         small_mark(frame, (200, 206, 201))
         return frame
     return render
@@ -379,29 +422,24 @@ SHOTS = [
     (6 * B, 8 * B, shot_transform(0, 26)),
     (8 * B, 10 * B, shot_transform(1, -26)),
     (10 * B, 12 * B, shot_transform(2, 26)),
-    (12 * B, 16 * B, shot_card_words([
-        ("RESIDENTIAL", WHITE, 128, 820, 0.06),
-        ("ROOFS.", GREEN, 150, 1010, 0.30),
-    ])),
-    (16 * B, 22 * B, shot_card_words([
-        ("OR COMMERCIAL", WHITE, 118, 780, 0.06),
-        ("FACADES.", GREEN, 150, 960, 0.30),
-        ("TOWERS • CONDOS • PLANTS", (178, 186, 180), 58, 1130, 1.0),
-    ])),
-    (22 * B, 27 * B, shot_satisfying(0)),
-    (27 * B, 28 * B, shot_photo_word(PAIRS[1][1], BGS[1][1], "CLEAN.", WHITE)),
-    (28 * B, 29 * B, shot_photo_word(PAIRS[2][1], BGS[2][1], "SPOTLESS.", GREEN)),
-    (29 * B, 31 * B, shot_card_words([
+    (12 * B, 16 * B, shot_photo_word(HERO, HERO_BG, "OR COMMERCIAL.", WHITE, size=118)),
+    (16 * B, 22 * B, shot_video_word(UF_FRAMES, UF_BG, "BUILDING FACADES.", GREEN,
+                                     842 / 1080, size=104, word_y=1700)),
+    (22 * B, 25 * B, shot_video_word(BH_FRAMES, BH_BG, "AND MORE.", WHITE, 1.0)),
+    (25 * B, 30 * B, shot_satisfying(0)),
+    (30 * B, 31 * B, shot_photo_word(PAIRS[1][1], BGS[1][1], "CLEAN.", WHITE)),
+    (31 * B, 32 * B, shot_photo_word(PAIRS[2][1], BGS[2][1], "SPOTLESS.", GREEN)),
+    (32 * B, 34 * B, shot_card_words([
         ("STATEWIDE", WHITE, 148, 830, 0.06),
         ("IN FLORIDA.", GREEN, 148, 1020, 0.32),
     ])),
-    (31 * B, 43 * B, shot_end_card()),
+    (34 * B, 48 * B, shot_end_card()),
 ]
 TOTAL = SHOTS[-1][1]
 
-WHITE_FLASH = [4 * B, 12 * B, 16 * B, 22 * B, 29 * B, 31 * B]
+WHITE_FLASH = [4 * B, 12 * B, 16 * B, 22 * B, 25 * B, 32 * B, 34 * B]
 GREEN_FLASH = [7 * B, 9 * B, 11 * B]
-MINI_FLASH = [27 * B, 28 * B]
+MINI_FLASH = [30 * B, 31 * B]
 
 
 def flash_amp(t):
@@ -458,14 +496,14 @@ INCLUDE_MUSIC = True   # beat-locked backing track under the SFX
 
 VO_CUES = [   # (wav, start) — timed to the on-screen words
     ("e1", 0.10), ("e2", 1.10), ("e3", 2.10), ("e4", 3.60),
-    ("eR", 6.05), ("eC", 8.10),
-    ("e5", 11.10), ("e6", 13.55), ("e7", 14.55), ("e8", 16.00),
+    ("eR", 5.05), ("eC", 6.90), ("eC2", 8.55), ("eC3", 11.05),
+    ("e5", 13.30), ("e6", 15.05), ("e7", 16.70), ("e8", 18.40),
 ]
 BOOMS = [(0.08, 1.0), (2.02, 1.1), (3.5, 0.85), (4.5, 0.85), (5.5, 0.85),
-         (6.02, 0.95), (8.02, 1.05), (11.02, 0.95), (13.52, 0.7),
-         (14.02, 0.7), (14.52, 0.95), (15.52, 1.1)]
-WHOOSH_ENDS = [2.0, 6.0, 8.0, 11.0, 14.5, 15.5]
-TICKS = [1.0, 1.5, 3.0, 4.0, 5.0, 13.5, 14.0]
+         (6.02, 1.0), (8.02, 1.0), (11.02, 0.95), (12.52, 0.95),
+         (15.02, 0.7), (15.52, 0.7), (16.02, 0.95), (17.02, 1.1)]
+WHOOSH_ENDS = [2.0, 6.0, 8.0, 12.5, 16.0, 17.0]
+TICKS = [1.0, 1.5, 3.0, 4.0, 5.0, 15.0, 15.5]
 
 
 _REVERB_IR = None
