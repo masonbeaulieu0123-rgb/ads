@@ -10,3 +10,4 @@ assets/sr/*.pb
 assets/music_clip.mp3
 output/audio/music_bed.wav
 output/audio/_*.wav
+output/audio/el_e*.mp3

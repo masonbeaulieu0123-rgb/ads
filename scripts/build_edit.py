@@ -454,7 +454,7 @@ INCLUDE_MUSIC = True   # beat-locked backing track under the SFX
 
 VO_CUES = [   # (wav, start) — timed to the on-screen words (am_fenrir pitchman read)
     ("e1", 0.10), ("e2", 1.10), ("e3", 2.10), ("e4", 3.60),
-    ("e5", 6.05), ("e6", 7.95), ("e7", 10.55), ("e8", 12.00),
+    ("e5", 6.05), ("e6", 7.95), ("e7", 10.55), ("e8", 11.95),
 ]
 BOOMS = [(0.08, 1.0), (2.02, 1.1), (3.5, 0.85), (4.5, 0.85), (5.5, 0.85),
          (6.02, 0.7), (6.52, 0.7), (7.02, 0.9), (10.52, 0.95), (11.52, 1.1)]
@@ -679,10 +679,9 @@ def build_audio():
         i0 = int(at * SR_A)
         i1 = min(i0 + len(clip), n)
         vo[i0:i1] += clip[:i1 - i0]
-    vo = np.tanh(vo * 1.7) / np.tanh(1.7)
-    vo = vo + 0.18 * np.diff(vo, prepend=0)     # presence lift
-    mix[:, 0] += vo * 0.95
-    mix[:, 1] += vo * 0.95
+    vo = np.tanh(vo * 1.15) / np.tanh(1.15)     # light glue, keep the natural read
+    mix[:, 0] += vo * 0.60
+    mix[:, 1] += vo * 0.60
 
     whoosh = _whoosh()
     for i, end in enumerate(WHOOSH_ENDS):
