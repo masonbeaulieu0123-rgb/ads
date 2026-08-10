@@ -379,25 +379,29 @@ SHOTS = [
     (6 * B, 8 * B, shot_transform(0, 26)),
     (8 * B, 10 * B, shot_transform(1, -26)),
     (10 * B, 12 * B, shot_transform(2, 26)),
-    (12 * B, 15 * B, shot_card_words([
-        ("SAFER.", WHITE, 140, 700, 0.0),
-        ("FASTER.", WHITE, 140, 900, 0.5),
-        ("CHEAPER.", GREEN, 140, 1100, 1.0),
+    (12 * B, 16 * B, shot_card_words([
+        ("RESIDENTIAL", WHITE, 128, 820, 0.06),
+        ("ROOFS.", GREEN, 150, 1010, 0.30),
     ])),
-    (15 * B, 19 * B, shot_satisfying(0)),
-    (19 * B, 20 * B, shot_photo_word(PAIRS[1][1], BGS[1][1], "CLEAN.", WHITE)),
-    (20 * B, 21 * B, shot_photo_word(PAIRS[2][1], BGS[2][1], "SPOTLESS.", GREEN)),
-    (21 * B, 23 * B, shot_card_words([
+    (16 * B, 22 * B, shot_card_words([
+        ("OR COMMERCIAL", WHITE, 118, 780, 0.06),
+        ("FACADES.", GREEN, 150, 960, 0.30),
+        ("TOWERS • CONDOS • PLANTS", (178, 186, 180), 58, 1130, 1.0),
+    ])),
+    (22 * B, 27 * B, shot_satisfying(0)),
+    (27 * B, 28 * B, shot_photo_word(PAIRS[1][1], BGS[1][1], "CLEAN.", WHITE)),
+    (28 * B, 29 * B, shot_photo_word(PAIRS[2][1], BGS[2][1], "SPOTLESS.", GREEN)),
+    (29 * B, 31 * B, shot_card_words([
         ("STATEWIDE", WHITE, 148, 830, 0.06),
         ("IN FLORIDA.", GREEN, 148, 1020, 0.32),
     ])),
-    (23 * B, 34 * B, shot_end_card()),
+    (31 * B, 43 * B, shot_end_card()),
 ]
 TOTAL = SHOTS[-1][1]
 
-WHITE_FLASH = [4 * B, 12 * B, 15 * B, 21 * B, 23 * B]
+WHITE_FLASH = [4 * B, 12 * B, 16 * B, 22 * B, 29 * B, 31 * B]
 GREEN_FLASH = [7 * B, 9 * B, 11 * B]
-MINI_FLASH = [19 * B, 20 * B]
+MINI_FLASH = [27 * B, 28 * B]
 
 
 def flash_amp(t):
@@ -452,14 +456,16 @@ SR_A = 44100
 INCLUDE_VO = True      # flip to False for the no-voice cut
 INCLUDE_MUSIC = True   # beat-locked backing track under the SFX
 
-VO_CUES = [   # (wav, start) — timed to the on-screen words (am_fenrir pitchman read)
+VO_CUES = [   # (wav, start) — timed to the on-screen words
     ("e1", 0.10), ("e2", 1.10), ("e3", 2.10), ("e4", 3.60),
-    ("e5", 6.05), ("e6", 7.95), ("e7", 10.55), ("e8", 11.95),
+    ("eR", 6.05), ("eC", 8.10),
+    ("e5", 11.10), ("e6", 13.55), ("e7", 14.55), ("e8", 16.00),
 ]
 BOOMS = [(0.08, 1.0), (2.02, 1.1), (3.5, 0.85), (4.5, 0.85), (5.5, 0.85),
-         (6.02, 0.7), (6.52, 0.7), (7.02, 0.9), (10.52, 0.95), (11.52, 1.1)]
-WHOOSH_ENDS = [2.0, 6.0, 7.5, 10.5, 11.5]
-TICKS = [1.0, 1.5, 3.0, 4.0, 5.0, 9.5, 10.0]
+         (6.02, 0.95), (8.02, 1.05), (11.02, 0.95), (13.52, 0.7),
+         (14.02, 0.7), (14.52, 0.95), (15.52, 1.1)]
+WHOOSH_ENDS = [2.0, 6.0, 8.0, 11.0, 14.5, 15.5]
+TICKS = [1.0, 1.5, 3.0, 4.0, 5.0, 13.5, 14.0]
 
 
 _REVERB_IR = None
