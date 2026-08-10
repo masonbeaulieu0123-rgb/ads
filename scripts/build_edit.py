@@ -33,7 +33,7 @@ def cover_grade(im, before):
     x = (im.width - int(W * HEADROOM)) // 2
     y = (im.height - int(H * HEADROOM)) // 2
     im = im.crop((x, y, x + int(W * HEADROOM), y + int(H * HEADROOM)))
-    im = im.filter(ImageFilter.UnsharpMask(radius=2, percent=45, threshold=2))
+    im = im.filter(ImageFilter.UnsharpMask(radius=2, percent=30, threshold=2))
     if before:
         im = ImageEnhance.Color(im).enhance(0.82)
         im = ImageEnhance.Brightness(im).enhance(0.90)
@@ -45,14 +45,32 @@ def cover_grade(im, before):
     return im
 
 
+def sr_upscale(im, cache_name):
+    """4x neural super-resolution (FSRCNN) so full-bleed crops keep real detail."""
+    cache = f"assets/sr/{cache_name}.png"
+    if os.path.exists(cache):
+        return Image.open(cache).convert("RGB")
+    import cv2
+    sr = cv2.dnn_superres.DnnSuperResImpl_create()
+    sr.readModel("assets/sr/FSRCNN_x4.pb")
+    sr.setModel("fsrcnn", 4)
+    out = sr.upsample(np.asarray(im)[:, :, ::-1])
+    up = Image.fromarray(out[:, :, ::-1])
+    up = up.filter(ImageFilter.UnsharpMask(radius=3, percent=42, threshold=2))
+    up.save(cache)
+    return up
+
+
 def load_pairs():
     pairs = []
     for path in ("assets/ba_lake_house.jpg", "assets/ba_pool_house.jpg",
                  "assets/ba_gray_roof.jpg"):
+        stem = os.path.splitext(os.path.basename(path))[0]
         src = Image.open(path).convert("RGB")
         half = src.width // 2
-        before = src.crop((0, 0, half, src.height))
-        after = src.crop((src.width - half, 0, src.width, src.height))
+        before = sr_upscale(src.crop((0, 0, half, src.height)), f"{stem}_before")
+        after = sr_upscale(src.crop((src.width - half, 0, src.width, src.height)),
+                           f"{stem}_after")
         pairs.append((cover_grade(before, True), cover_grade(after, False)))
     return pairs
 
@@ -76,7 +94,7 @@ VIGNETTE = make_vignette()
 GRAIN = []
 _rng = np.random.default_rng(3)
 for _ in range(6):
-    GRAIN.append((_rng.standard_normal((H // 2, W // 2, 1)) * 3.0)
+    GRAIN.append((_rng.standard_normal((H // 2, W // 2, 1)) * 2.2)
                  .repeat(2, axis=0).repeat(2, axis=1))
 
 
@@ -323,7 +341,7 @@ SHOTS = [
         ("STATEWIDE", WHITE, 148, 830, 0.06),
         ("IN FLORIDA.", GREEN, 148, 1020, 0.32),
     ])),
-    (23 * B, 31 * B, shot_end_card()),
+    (23 * B, 34 * B, shot_end_card()),
 ]
 TOTAL = SHOTS[-1][1]
 
@@ -364,6 +382,102 @@ def frame_at(t, fi):
     return np.clip(arr, 0, 255).astype(np.uint8)
 
 
+# ---------------------------------------------------------------- audio
+# Voice + sound design only (booms, whooshes, ticks) — no music, so the user's
+# own song sits cleanly underneath when they post.
+
+SR_A = 44100
+
+VO_CUES = [   # (wav, start) — timed to the on-screen words
+    ("e1", 0.10), ("e2", 1.02), ("e3", 2.08), ("e4", 3.15),
+    ("e5", 6.05), ("e6", 7.90), ("e7", 10.55), ("e8", 11.80),
+]
+BOOMS = [(0.08, 1.0), (2.02, 1.1), (3.5, 0.85), (4.5, 0.85), (5.5, 0.85),
+         (6.02, 0.7), (6.52, 0.7), (7.02, 0.9), (10.52, 0.95), (11.52, 1.1)]
+WHOOSH_ENDS = [2.0, 6.0, 7.5, 10.5, 11.5]
+TICKS = [1.0, 1.5, 3.0, 4.0, 5.0, 9.5, 10.0]
+
+
+def _boom(gain):
+    st = np.arange(int(0.7 * SR_A)) / SR_A
+    fr = 68 * np.exp(-st * 10) + 38
+    sub = np.sin(2 * np.pi * np.cumsum(fr) / SR_A) * np.exp(-st * 7)
+    sub = np.tanh(sub * 2.2)
+    kn = int(0.05 * SR_A)
+    rng = np.random.default_rng(5)
+    thump = np.zeros_like(st)
+    noise = rng.standard_normal(kn)
+    noise = np.convolve(noise, np.ones(24) / 24, mode="same")
+    thump[:kn] = noise * np.exp(-np.arange(kn) / SR_A * 120)
+    return gain * (0.16 * sub + 0.10 * thump)
+
+
+def _whoosh():
+    wn = int(0.6 * SR_A)
+    rng = np.random.default_rng(9)
+    noise = rng.standard_normal(wn)
+    y = np.zeros(wn)
+    alpha = np.linspace(0.02, 0.5, wn)
+    acc = 0.0
+    for i in range(wn):
+        acc += alpha[i] * (noise[i] - acc)
+        y[i] = acc
+    return 0.14 * y * (np.arange(wn) / wn) ** 2.0
+
+
+def _tick():
+    tn = int(0.03 * SR_A)
+    rng = np.random.default_rng(4)
+    noise = np.diff(rng.standard_normal(tn), prepend=0)
+    return 0.045 * noise * np.exp(-np.arange(tn) / SR_A * 160)
+
+
+def build_audio():
+    import soundfile as sf_
+    n = int(TOTAL * SR_A)
+    mix = np.zeros(n, dtype=np.float32)
+
+    def add(sig, at):
+        i0 = int(at * SR_A)
+        i1 = min(i0 + len(sig), n)
+        if i1 > i0:
+            mix[i0:i1] += sig[:i1 - i0].astype(np.float32)
+
+    vo = np.zeros(n, dtype=np.float32)
+    for name, at in VO_CUES:
+        data, src_sr = sf_.read(f"output/audio/{name}.wav", dtype="float32")
+        if data.ndim > 1:
+            data = data.mean(axis=1)
+        tt = np.arange(int(len(data) * SR_A / src_sr)) / SR_A
+        clip = np.interp(tt, np.arange(len(data)) / src_sr, data)
+        i0 = int(at * SR_A)
+        i1 = min(i0 + len(clip), n)
+        vo[i0:i1] += clip[:i1 - i0]
+    vo = np.tanh(vo * 1.7) / np.tanh(1.7)
+    mix += vo * 0.92
+
+    whoosh = _whoosh()
+    for end in WHOOSH_ENDS:
+        add(whoosh, end - 0.6)
+    for at, g in BOOMS:
+        add(_boom(g), at)
+    tick = _tick()
+    for at in TICKS:
+        add(tick, at)
+
+    peak = np.abs(mix).max()
+    if peak > 0.92:
+        mix *= 0.92 / peak
+    stereo = np.repeat((mix * 32767).astype(np.int16)[:, None], 2, axis=1)
+    import wave
+    with wave.open("output/audio/edit_mix.wav", "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(SR_A)
+        w.writeframes(stereo.tobytes())
+    print(f"edit audio: {TOTAL:.2f}s (VO + SFX, no music)")
+
+
 # ---------------------------------------------------------------- main
 
 def main():
@@ -375,12 +489,14 @@ def main():
         return
 
     import imageio_ffmpeg
+    import subprocess
+    build_audio()
     out = "output/droneshine_edit.mp4"
+    silent = "output/_edit_silent.mp4"
     writer = imageio_ffmpeg.write_frames(
-        out, (W, H), fps=FPS, codec="libx264", macro_block_size=1,
-        input_params=[], output_params=["-crf", "22", "-preset", "medium",
-                                        "-pix_fmt", "yuv420p",
-                                        "-movflags", "+faststart", "-an"],
+        silent, (W, H), fps=FPS, codec="libx264", macro_block_size=1,
+        input_params=[], output_params=["-crf", "18", "-preset", "slow",
+                                        "-pix_fmt", "yuv420p"],
     )
     writer.send(None)
     n = int(TOTAL * FPS)
@@ -389,7 +505,14 @@ def main():
         if i % 120 == 0:
             print(f"{i}/{n} frames", flush=True)
     writer.close()
-    print(f"done: {out} ({TOTAL:.1f}s, {n} frames, silent)")
+
+    ff = imageio_ffmpeg.get_ffmpeg_exe()
+    subprocess.run([ff, "-y", "-i", silent, "-i", "output/audio/edit_mix.wav",
+                    "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+                    "-movflags", "+faststart", "-shortest", out],
+                   check=True, capture_output=True)
+    os.remove(silent)
+    print(f"done: {out} ({TOTAL:.1f}s, {n} frames, VO+SFX)")
 
 
 if __name__ == "__main__":

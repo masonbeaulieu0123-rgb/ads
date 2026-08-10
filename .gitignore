@@ -6,3 +6,4 @@ scripts/__pycache__/
 output/audio/mix.wav
 assets/voice/kokoro-v1.0.onnx
 assets/voice/voices-v1.0.bin
+assets/sr/*.pb
