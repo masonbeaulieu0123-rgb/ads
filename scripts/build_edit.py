@@ -563,8 +563,8 @@ INCLUDE_VO = True      # flip to False for the no-voice cut
 INCLUDE_MUSIC = True   # beat-locked backing track under the SFX
 
 VO_CUES = [   # (wav, start) — timed to the on-screen words
-    ("e1", 0.10), ("e2", 1.10), ("e3", 2.10), ("e4", 3.60),
-    ("eR", 5.05), ("eC", 7.00), ("eC2", 8.55), ("eUF", 11.30),
+    ("e1", 0.10), ("e2", 1.10), ("e3", 2.10), ("e4", 3.10),
+    ("eR", 4.10), ("eC", 6.30), ("eC2", 8.55), ("eUF", 11.30),
     ("e5", 16.00), ("e6", 17.70), ("e7", 19.55), ("e8", 21.15),
 ]
 BOOMS = [(0.08, 1.0), (2.02, 1.1), (3.5, 0.85), (4.5, 0.85), (5.5, 0.85),
