@@ -143,19 +143,38 @@ else:
 
 
 def shot_uf_reveal():
-    """University of Florida credit — before/after photo when available,
-    else the credit runs over a second segment of the cleaning video."""
+    """University of Florida spotlight: dirty holds, slider wipe reveals clean,
+    credits land on the after. Falls back to cleaning-video footage if the
+    composite photo is missing."""
+    f_label = archivo(30, 650)
+    p_before = pill("BEFORE", f_label, WHITE, (8, 10, 9, 185), pad_x=24, pad_y=12, tracking=3)
+    p_after = pill("AFTER", f_label, (8, 14, 9), (*GREEN, 240), pad_x=24, pad_y=12, tracking=3)
+
     def render(t, d, t0):
         if UF_HAS_PHOTO:
             frame = UF_BA_BG.copy()
-            swap = 0.6
-            if t < swap:
-                paste_card(frame, UF_BEFORE, 0.985 + 0.015 * t / swap)
-            else:
-                u = (t - swap) / (d - swap)
-                dx, dy = shake_at(t0 + t, t0 + swap, 0.8)
-                paste_card(frame, UF_AFTER, 0.985 + 0.015 * u, dx, dy)
-            title_at = swap + 0.1
+            s = 0.985 + 0.015 * (t / d)
+            w = int(W * s)
+            h = int(UF_BEFORE.height * w / UF_BEFORE.width)
+            card = UF_BEFORE.resize((w, h), Image.LANCZOS)
+            wt = smoothstep((t - 1.0) / 1.0)
+            wx = int(wt * w)
+            if wx > 0:
+                av = UF_AFTER.resize((w, h), Image.LANCZOS)
+                card.paste(av.crop((0, 0, wx, h)), (0, 0))
+                if 0 < wx < w:
+                    pd = ImageDraw.Draw(card, "RGBA")
+                    pd.rectangle([wx - 22, 0, wx - 2, h], fill=(0, 0, 0, 40))
+                    pd.rectangle([wx - 2, 0, wx + 1, h], fill=(255, 255, 255, 240))
+            x, y, w, h = paste_card(frame, card, s)
+            # BEFORE tag until the wipe passes it; AFTER tag once revealed
+            if wt < 1:
+                b = faded(p_before, min(1.0, max(0.0, 1 - (wt - 0.9) / 0.1)))
+                frame.paste(b, (x + w - b.width - 26, y + 24), b)
+            if wx > 200:
+                a = faded(p_after, min(1.0, (wx - 200) / 200))
+                frame.paste(a, (x + 26, y + 24), a)
+            title_at = 2.15
         else:
             frame = UF2_BG.copy()
             dx, dy = shake_at(t0 + t, t0)
@@ -474,21 +493,21 @@ SHOTS = [
     (12 * B, 16 * B, shot_photo_word(HERO, HERO_BG, "OR COMMERCIAL.", WHITE, size=118)),
     (16 * B, 22 * B, shot_video_word(UF_FRAMES, UF_BG, "BUILDING FACADES.", GREEN,
                                      842 / 1080, size=104, word_y=1700)),
-    (22 * B, 28 * B, shot_uf_reveal()),
-    (28 * B, 33 * B, shot_satisfying(0)),
-    (33 * B, 34 * B, shot_photo_word(PAIRS[1][1], BGS[1][1], "CLEAN.", WHITE)),
-    (34 * B, 35 * B, shot_photo_word(PAIRS[2][1], BGS[2][1], "SPOTLESS.", GREEN)),
-    (35 * B, 37 * B, shot_card_words([
+    (22 * B, 30 * B, shot_uf_reveal()),
+    (30 * B, 35 * B, shot_satisfying(0)),
+    (35 * B, 36 * B, shot_photo_word(PAIRS[1][1], BGS[1][1], "CLEAN.", WHITE)),
+    (36 * B, 37 * B, shot_photo_word(PAIRS[2][1], BGS[2][1], "SPOTLESS.", GREEN)),
+    (37 * B, 39 * B, shot_card_words([
         ("STATEWIDE", WHITE, 148, 830, 0.06),
         ("IN FLORIDA.", GREEN, 148, 1020, 0.32),
     ])),
-    (37 * B, 51 * B, shot_end_card()),
+    (39 * B, 53 * B, shot_end_card()),
 ]
 TOTAL = SHOTS[-1][1]
 
-WHITE_FLASH = [4 * B, 12 * B, 16 * B, 22 * B, 28 * B, 35 * B, 37 * B]
-GREEN_FLASH = [7 * B, 9 * B, 11 * B, 22 * B + 0.6]
-MINI_FLASH = [33 * B, 34 * B]
+WHITE_FLASH = [4 * B, 12 * B, 16 * B, 22 * B, 30 * B, 37 * B, 39 * B]
+GREEN_FLASH = [7 * B, 9 * B, 11 * B]
+MINI_FLASH = [35 * B, 36 * B]
 
 
 def flash_amp(t):
@@ -545,14 +564,14 @@ INCLUDE_MUSIC = True   # beat-locked backing track under the SFX
 
 VO_CUES = [   # (wav, start) — timed to the on-screen words
     ("e1", 0.10), ("e2", 1.10), ("e3", 2.10), ("e4", 3.60),
-    ("eR", 5.05), ("eC", 6.90), ("eC2", 8.55), ("eUF", 11.75),
-    ("e5", 15.00), ("e6", 16.55), ("e7", 18.20), ("e8", 19.90),
+    ("eR", 5.05), ("eC", 6.90), ("eC2", 8.55), ("eUF", 11.30),
+    ("e5", 16.00), ("e6", 17.55), ("e7", 19.25), ("e8", 20.90),
 ]
 BOOMS = [(0.08, 1.0), (2.02, 1.1), (3.5, 0.85), (4.5, 0.85), (5.5, 0.85),
-         (6.02, 1.0), (8.02, 1.0), (11.02, 0.95), (11.62, 0.9), (14.02, 0.95),
-         (16.52, 0.7), (17.02, 0.7), (17.52, 0.95), (18.52, 1.1)]
-WHOOSH_ENDS = [2.0, 6.0, 8.0, 11.0, 14.0, 17.5, 18.5]
-TICKS = [1.0, 1.5, 3.0, 4.0, 5.0, 16.5, 17.0]
+         (6.02, 1.0), (8.02, 1.0), (11.02, 0.95), (15.02, 0.95),
+         (17.52, 0.7), (18.02, 0.7), (18.52, 0.95), (19.52, 1.1)]
+WHOOSH_ENDS = [2.0, 6.0, 8.0, 11.0, 15.0, 18.5, 19.5]
+TICKS = [1.0, 1.5, 3.0, 4.0, 5.0, 17.5, 18.0]
 
 
 _REVERB_IR = None
