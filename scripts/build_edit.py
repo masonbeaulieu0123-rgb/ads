@@ -773,8 +773,8 @@ def build_audio():
         i1 = min(i0 + len(clip), n)
         vo[i0:i1] += clip[:i1 - i0]
     vo = np.tanh(vo * 1.15) / np.tanh(1.15)     # light glue, keep the natural read
-    mix[:, 0] += vo * 0.60
-    mix[:, 1] += vo * 0.60
+    mix[:, 0] += vo * 0.50
+    mix[:, 1] += vo * 0.50
 
     whoosh = _whoosh()
     for i, end in enumerate(WHOOSH_ENDS):
